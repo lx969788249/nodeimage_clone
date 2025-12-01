@@ -1158,6 +1158,7 @@ function applyBranding() {
   const displayName = state.branding.name || 'Nodeimage';
   const displaySubtitle = state.branding.subtitle || 'NodeSeek专用图床·克隆版';
   const displayFooter = state.branding.footer || 'Nodeimage 克隆版 · 本地演示';
+  const displayIcon = state.branding.icon || (els.brandLogoDisplay ? (els.brandLogoDisplay.dataset.default || els.brandLogoDisplay.src) : '');
 
   if (els.brandNameDisplay) els.brandNameDisplay.textContent = displayName;
   if (els.brandSubtitleDisplay) els.brandSubtitleDisplay.textContent = displaySubtitle;
@@ -1169,6 +1170,13 @@ function applyBranding() {
   if (els.brandSubtitleInput) els.brandSubtitleInput.value = state.branding.subtitle;
   if (els.brandIconInput) els.brandIconInput.value = state.branding.icon || '';
   if (els.footerMarkdownInput) els.footerMarkdownInput.value = state.branding.footer || '';
+
+  // 同步浏览器标题和 Favicon
+  document.title = displayName || document.title;
+  const link = document.querySelector("link[rel*='icon']") || document.createElement('link');
+  link.rel = 'icon';
+  if (!link.parentNode) document.head.appendChild(link);
+  if (displayIcon) link.href = displayIcon;
 }
 
 function applyBrandingFromInputs() {

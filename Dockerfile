@@ -13,8 +13,8 @@ COPY server.js ./server.js
 COPY data ./data
 RUN mkdir -p uploads/thumbs
 
-ENV PORT=3000
-EXPOSE 3000
+ENV PORT=7878
+EXPOSE 7878
 
 # 启动服务
 CMD ["node", "server.js"]

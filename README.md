@@ -2,7 +2,7 @@
 
 ## 唠嗑
 
-眼馋nodeimage很久了。非常喜欢这种简洁好看的图床。一直想要一个，之前听说@shuai大佬说会开源，给我高兴的等了好久，但是等了很久实在是等不下去了（没有任何催开源的意思，纯粹是太眼馋了），所以就想着借助ai自己手搓一个，前前后后搞了两天（codex还是不太行，太傻），终于是搓出来了。本来想着自己用，后来一想，干脆分享出来算了，大家如果喜欢的话也欢迎部署哈。我个人觉得相似度还是挺高的嘿嘿
+自己闲来无事仿照nodeimage搓了一个复刻版图床出来，本来想着自己用，后来想了一下还是分享吧。
 
 [演示网址](https://tc.vpsyyds.eu.org/)
 
@@ -26,7 +26,7 @@ docker run -d --name nodeimage_clone \
   -v "/root/nodeimage_clone/data:/app/data" \
   lx969788249/nodeimage_clone:latest
 ```
-访问 `http://localhost:3000` 登录，*默认账号：**admin** 默认密码：**admin***
+访问 `http://localhost:7878` 登录，*默认账号：**admin** 默认密码：**admin***
 
 再按需修改账号密码。
 
@@ -58,4 +58,4 @@ services:
 docker compose up -d
 ```
 
-访问 `http://localhost:3000` 登录，*默认账号：**admin** 默认密码：**admin***
+访问 `http://localhost:7878` 登录，*默认账号：**admin** 默认密码：**admin***

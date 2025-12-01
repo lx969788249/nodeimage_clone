@@ -12,7 +12,7 @@ import bcrypt from 'bcryptjs';
 const __dirname = process.cwd();
 const app = express();
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 7878;
 const CONFIG_BASE_URL = process.env.BASE_URL ? process.env.BASE_URL.replace(/\/$/, '') : '';
 const uploadDir = path.join(__dirname, 'uploads');
 const thumbDir = path.join(uploadDir, 'thumbs');
@@ -55,6 +55,9 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE }
 });
+
+// 在反代场景下使用 X-Forwarded-* 头推断真实协议
+app.set('trust proxy', true);
 
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -111,8 +114,9 @@ async function saveDb(db) {
 
 function getBaseUrl(req) {
   if (CONFIG_BASE_URL) return CONFIG_BASE_URL;
-  const host = req.get('host');
-  const protocol = req.protocol;
+  const xfProto = req.get('x-forwarded-proto');
+  const protocol = (xfProto || req.protocol || 'http').split(',')[0].trim();
+  const host = req.get('x-forwarded-host') || req.get('host');
   return `${protocol}://${host}`;
 }
 

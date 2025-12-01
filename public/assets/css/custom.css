@@ -6,6 +6,21 @@ body, html {
   background-size: 32px 32px;
 }
 
+.global-footer {
+  text-align: center;
+  margin: 18px 0 28px;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+.global-footer a {
+  color: var(--color-primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+.global-footer a:hover {
+  text-decoration: underline;
+}
+
 .upload-content { cursor: pointer; }
 
 .api-view,
