@@ -30,7 +30,6 @@ const state = {
     name: 'Nodeimage',
     subtitle: 'NodeSeek专用图床·克隆版',
     icon: null,
-    footer: 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
     registrationEnabled: false
   }
 };
@@ -1588,7 +1587,6 @@ function handleBrandingInput() {
 function applyBranding() {
   const displayName = state.branding.name || 'Nodeimage';
   const displaySubtitle = state.branding.subtitle || 'NodeSeek专用图床·克隆版';
-  const displayFooter = state.branding.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>';
   const defaultLogo = els.brandLogo?.dataset?.default || els.brandLogo?.src || '';
   const displayIcon = state.branding.icon || defaultLogo;
 
@@ -1602,10 +1600,6 @@ function applyBranding() {
   if (els.brandSubtitleInput) els.brandSubtitleInput.value = state.branding.subtitle;
   if (els.brandIconInput) els.brandIconInput.value = state.branding.icon || '';
   if (els.allowRegisterInput) els.allowRegisterInput.checked = !!state.branding.registrationEnabled;
-
-  // 动态渲染页脚
-  const footer = document.querySelector('.global-footer');
-  if (footer) footer.innerHTML = displayFooter;
 
   // 同步浏览器标题和 Favicon
   document.title = displayName || document.title;
@@ -1665,7 +1659,6 @@ async function loadBrandingFromServer() {
     name: data.name || 'Nodeimage',
     subtitle: data.subtitle || 'NodeSeek专用图床·克隆版',
     icon: data.icon || '',
-    footer: data.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
     registrationEnabled: !!data.registrationEnabled
   };
   } catch (err) {
@@ -1678,7 +1671,6 @@ async function saveBrandingToServer() {
     name: state.branding.name || 'Nodeimage',
     subtitle: state.branding.subtitle || 'NodeSeek专用图床·克隆版',
     icon: state.branding.icon || '',
-    footer: state.branding.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
     registrationEnabled: !!state.branding.registrationEnabled
   };
   const res = await fetch('/api/settings/branding', {

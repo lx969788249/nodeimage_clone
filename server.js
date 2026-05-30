@@ -294,7 +294,6 @@ async function loadDb() {
     name: 'Nodeimage',
     subtitle: 'NodeSeek专用图床·克隆版',
     icon: '',
-    footer: 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
     registrationEnabled: false
   };
   const data = { users, images, settings: { branding } };
@@ -803,7 +802,6 @@ app.get('/api/settings/branding', async (req, res) => {
     name: branding.name || 'Nodeimage',
     subtitle: branding.subtitle || 'NodeSeek专用图床·克隆版',
     icon: branding.icon || '',
-    footer: branding.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
     registrationEnabled: !!branding.registrationEnabled
   });
 });
@@ -817,7 +815,6 @@ app.post('/api/settings/branding', requireAuth, async (req, res) => {
     name: req.body.name || 'Nodeimage',
     subtitle: req.body.subtitle || 'NodeSeek专用图床·克隆版',
     icon: req.body.icon || '',
-    footer: req.body.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
     registrationEnabled: parseBool(req.body.registrationEnabled, false)
   };
   await saveDb(db);
