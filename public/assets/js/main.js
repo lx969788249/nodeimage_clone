@@ -65,10 +65,6 @@ const els = {
   autoDelete: document.getElementById('autoDelete'),
   deleteDays: document.getElementById('deleteDays'),
   daysInputInline: document.getElementById('daysInputInline'),
-  settingsBtn: document.getElementById('settingsBtn'),
-  backToUploadBtn: document.getElementById('backToUploadBtn'),
-  flipCardInner: document.getElementById('flipCardInner'),
-  settingsTooltip: document.getElementById('settingsTooltip'),
   authModal: document.getElementById('authModal'),
   openAuthBtn: document.getElementById('openAuthBtn'),
   loginUsername: document.getElementById('loginUsername'),
@@ -214,7 +210,7 @@ function showNotification(message, type = 'info', duration = 3200) {
   li.className = `notification ${type}`;
   li.innerHTML = `
     <div class="notification-content">
-      <div class="notification-icon">${type === 'error' ? '!' : type === 'success' ? '✓' : 'i'}</div>
+      <div class="notification-icon">${type === 'error' ? '✕' : type === 'success' ? '✓' : type === 'warning' ? '⚠' : 'ℹ'}</div>
       <div class="notification-text">${message}</div>
     </div>
     <div class="notification-progress-bar"></div>
@@ -341,16 +337,15 @@ function hideProgress() {
 }
 
 function switchView(view) {
-  // 始终保持 mainView 可见，内部切换子视图
   if (els.mainView) els.mainView.style.display = 'block';
   if (els.uploadArea) els.uploadArea.style.display = view === 'main' ? 'block' : 'none';
   els.historyView.style.display = view === 'history' ? 'flex' : 'none';
   els.apiView.style.display = view === 'api' ? 'block' : 'none';
-  // 隐藏/显示 flip-card 整体，避免占位
+  const settingsView = document.getElementById('settingsView');
+  if (settingsView) settingsView.style.display = view === 'settings' ? 'block' : 'none';
+  // 隐藏/显示 flip-card
   const flipCard = document.querySelector('.flip-card');
-  if (flipCard) {
-    flipCard.style.display = view === 'main' ? 'block' : 'none';
-  }
+  if (flipCard) flipCard.style.display = view === 'main' ? 'block' : 'none';
   els.backBtn.style.display = view !== 'main' ? 'inline-flex' : 'none';
   els.backBtn2.style.display = 'none';
   if (view !== 'main') {
@@ -365,10 +360,15 @@ function switchView(view) {
   } else if (els.resultCopyAllBar) {
     els.resultCopyAllBar.style.display = 'none';
   }
-}
-
-function flipToSettings(showSettings) {
-  els.flipCardInner.classList.toggle('flipped', showSettings);
+  if (view === 'settings') {
+    loadBackupSettings();
+    // 管理 section 仅管理员可见
+    const isAdmin = isAdminUser();
+    ['adminSection', 'registerSection', 'userManagementSection', 'backupSection', 'autoBackupSection'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = isAdmin ? '' : 'none';
+    });
+  }
 }
 
 function buildUrlButtons(result, withActive = false, onChange, activeType = 'direct') {
@@ -957,20 +957,14 @@ async function registerUser() {
 
 function setupEventListeners() {
   els.themeToggle.addEventListener('click', () => applyTheme(state.theme === 'light' ? 'dark' : 'light'));
-  els.settingsBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (!state.user) {
-      toggleAuthModal(true);
-      return;
-    }
-    if (!isAdminUser()) {
-      showNotification('权限不足', 'error');
-      return;
-    }
-    flipToSettings(true);
-    loadAdminUsers();
-  });
-  els.backToUploadBtn.addEventListener('click', () => flipToSettings(false));
+  const settingsNavBtn = document.getElementById('settingsNavBtn');
+  if (settingsNavBtn) {
+    settingsNavBtn.addEventListener('click', () => {
+      if (!state.user) { toggleAuthModal(true); return; }
+      switchView('settings');
+      if (els.backBtn) els.backBtn.style.display = 'inline-flex';
+    });
+  }
   // 只允许点击上传内容区域触发 fileInput，避免点击 result-container 触发
   if (els.uploadArea) {
     const uploadContent = els.uploadArea.querySelector('.upload-content');
@@ -1050,6 +1044,75 @@ function setupEventListeners() {
     state.settings.deleteDays = num;
     persistSettings();
   });
+
+  // --- 设置页脏标记 ---
+  function markSectionDirty(el) {
+    const section = el.closest('.settings-section');
+    if (section) section.classList.add('dirty');
+  }
+
+  // 给所有需要追踪的设置 section 绑定 input 事件
+  document.querySelectorAll('.settings-section[data-save]').forEach((section) => {
+    section.querySelectorAll('input').forEach((input) => {
+      input.addEventListener('input', () => markSectionDirty(input));
+      input.addEventListener('change', () => markSectionDirty(input));
+    });
+  });
+
+  // 统一保存
+  const saveAllBtn = document.getElementById('saveAllSettingsBtn');
+  if (saveAllBtn) {
+    saveAllBtn.addEventListener('click', async () => {
+      const dirty = document.querySelectorAll('.settings-section.dirty[data-save]');
+      if (!dirty.length) { showNotification('没有需要保存的更改', 'info'); return; }
+
+      const saved = [];
+      let hasBranding = false, hasBackup = false;
+
+      for (const section of dirty) {
+        const type = section.dataset.save;
+        if (type === 'local') {
+          persistSettings();
+          saved.push(section.querySelector('h3')?.textContent || '设置');
+          section.classList.remove('dirty');
+        } else if (type === 'branding') {
+          hasBranding = true;
+        } else if (type === 'backup') {
+          hasBackup = true;
+        }
+      }
+
+      // 品牌设置通过 API 保存
+      if (hasBranding) {
+        try {
+          handleBrandingInput();
+          await saveBrandingToServer();
+          await loadBrandingFromServer();
+          applyBranding();
+          const secs = document.querySelectorAll('.settings-section.dirty[data-save="branding"]');
+          secs.forEach((s) => { s.classList.remove('dirty'); saved.push(s.querySelector('h3')?.textContent || ''); });
+        } catch (err) {
+          showNotification('品牌设置保存失败: ' + err.message, 'error');
+          return;
+        }
+      }
+
+      // 备份设置通过 API 保存
+      if (hasBackup) {
+        try {
+          await saveBackupSettings();
+          const secs = document.querySelectorAll('.settings-section.dirty[data-save="backup"]');
+          secs.forEach((s) => { s.classList.remove('dirty'); saved.push(s.querySelector('h3')?.textContent || ''); });
+        } catch (err) {
+          showNotification('备份设置保存失败: ' + err.message, 'error');
+          return;
+        }
+      }
+
+      const names = [...new Set(saved.filter(Boolean))];
+      showNotification(names.length ? names.join('、') + ' 已保存' : '设置已保存', 'success');
+    });
+  }
 
   els.openAuthBtn.addEventListener('click', () => toggleAuthModal(true));
   els.authModal.addEventListener('click', (e) => {
@@ -1303,10 +1366,20 @@ function setupEventListeners() {
   if (els.allowRegisterInput) els.allowRegisterInput.addEventListener('change', handleBrandingInput);
 
   // --- 备份设置 ---
+  const S3_PRESETS = {
+    aws:   { endpoint: 'https://s3.amazonaws.com', region: 'us-east-1' },
+    r2:    { endpoint: 'https://<账号ID>.r2.cloudflarestorage.com', region: 'auto' },
+    b2:    { endpoint: 'https://s3.us-west-004.backblazeb2.com', region: 'us-west-004' },
+    wasabi:{ endpoint: 'https://s3.wasabisys.com', region: 'us-east-1' },
+    do:    { endpoint: 'https://nyc3.digitaloceanspaces.com', region: 'nyc3' },
+    minio: { endpoint: 'http://localhost:9000', region: 'us-east-1' }
+  };
+
   const elsBackup = {
     saveBtn: document.getElementById('saveBackupSettingsBtn'),
     intervalHours: document.getElementById('backupIntervalHours'),
     keepCount: document.getElementById('backupKeepCount'),
+    s3Provider: document.getElementById('s3Provider'),
     s3Endpoint: document.getElementById('s3Endpoint'),
     s3Region: document.getElementById('s3Region'),
     s3Bucket: document.getElementById('s3Bucket'),
@@ -1418,17 +1491,28 @@ function setupEventListeners() {
   }
 
   async function triggerBackup() {
-    if (elsBackup.backupStatus) elsBackup.backupStatus.textContent = '备份中...';
+    // 检查是否配置了任何远程备份目标
+    let hasRemote = false;
+    try {
+      const st = await fetch('/api/backup/status', { credentials: 'include' });
+      const cfg = await st.json();
+      hasRemote = cfg.s3.configured || cfg.webhook.configured;
+    } catch (e) { /* ignore */ }
+
+    if (!hasRemote) {
+      showNotification('未配置 S3 或 Webhook，仅会生成本地备份文件', 'warning');
+    }
+
     try {
       const res = await fetch('/api/backup/auto', { method: 'POST', credentials: 'include' });
       const data = await res.json();
       if (res.ok) {
-        if (elsBackup.backupStatus) { elsBackup.backupStatus.textContent = '✅ ' + data.message; elsBackup.backupStatus.style.color = 'green'; }
+        showNotification(hasRemote ? '远程备份已完成' : '本地备份已生成', 'success');
       } else {
-        if (elsBackup.backupStatus) { elsBackup.backupStatus.textContent = '❌ ' + (data.message || '失败'); elsBackup.backupStatus.style.color = 'red'; }
+        showNotification('备份失败: ' + (data.message || '未知错误'), 'error');
       }
     } catch (err) {
-      if (elsBackup.backupStatus) { elsBackup.backupStatus.textContent = '❌ 请求失败'; elsBackup.backupStatus.style.color = 'red'; }
+      showNotification('备份请求失败', 'error');
     }
   }
 
@@ -1436,6 +1520,16 @@ function setupEventListeners() {
   if (elsBackup.testS3Btn) elsBackup.testS3Btn.addEventListener('click', testS3);
   if (elsBackup.testWebhookBtn) elsBackup.testWebhookBtn.addEventListener('click', testWebhook);
   if (elsBackup.triggerBtn) elsBackup.triggerBtn.addEventListener('click', triggerBackup);
+
+  // S3 服务商选择
+  if (elsBackup.s3Provider) {
+    elsBackup.s3Provider.addEventListener('change', () => {
+      const preset = S3_PRESETS[elsBackup.s3Provider.value];
+      if (preset && elsBackup.s3Endpoint) elsBackup.s3Endpoint.value = preset.endpoint;
+      if (preset && elsBackup.s3Region) elsBackup.s3Region.value = preset.region;
+      markSectionDirty(elsBackup.s3Provider);
+    });
+  }
 
   // 打开管理面板时加载备份设置
   const origAdminPanelBtn = document.getElementById('adminPanelBtn');
@@ -1464,7 +1558,6 @@ async function init() {
   await loadBrandingFromServer();
   applyBranding();
   setupEventListeners();
-  maybeShowSettingsTip();
   updateCurlExamples();
   toggleAuthModal(false);
   await refreshUserStatus();
@@ -1474,17 +1567,6 @@ async function init() {
 
 applyCopyAllIcons();
 init();
-
-function maybeShowSettingsTip() {
-  if (!els.settingsTooltip) return;
-  const shown = localStorage.getItem('ni_settings_tip_shown') === 'true';
-  if (shown) return;
-  setTimeout(() => {
-    els.settingsTooltip.classList.add('show');
-    setTimeout(() => els.settingsTooltip.classList.remove('show'), 4000);
-  }, 800);
-  localStorage.setItem('ni_settings_tip_shown', 'true');
-}
 
 function updateCurlExamples() {
   const origin = window.location.origin;

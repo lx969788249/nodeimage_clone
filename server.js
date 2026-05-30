@@ -147,6 +147,56 @@ app.get('/uploads/:file', async (req, res, next) => {
   return next();
 });
 
+// 缩略图自动重生：找不到时从原图生成
+app.use('/uploads/thumbs', async (req, res, next) => {
+  const thumbPath = path.join(uploadDir, 'thumbs', req.path.replace(/^\/+/, ''));
+  if (await fs.pathExists(thumbPath)) return next();
+
+  // 从路径推断原图文件名：xxx_thumb.webp → xxx.webp (或其他扩展名)
+  const thumbFile = path.basename(req.path);
+  if (!thumbFile.endsWith('_thumb.webp')) return next();
+
+  const baseName = thumbFile.replace(/_thumb\.webp$/, '');
+  const thumbDir = path.dirname(req.path); // e.g. /2026/05
+
+  // 查找原图
+  let originalRel = null;
+  for (const ext of ['webp', 'png', 'jpg', 'jpeg', 'gif', 'avif']) {
+    const test = path.join(thumbDir.replace(/^\/+/, ''), `${baseName}.${ext}`);
+    if (await fs.pathExists(path.join(uploadDir, test))) {
+      originalRel = test;
+      break;
+    }
+  }
+  // 也查数据库
+  if (!originalRel) {
+    try {
+      const db = await getSqlite();
+      const row = await db.get('SELECT filename FROM images WHERE thumbName LIKE ?', `%${thumbFile}`);
+      if (row) originalRel = row.filename;
+    } catch (e) { /* ignore */ }
+  }
+
+  if (!originalRel) return next();
+
+  try {
+    const originalPath = path.join(uploadDir, originalRel);
+    const buffer = await fs.readFile(originalPath);
+    const thumbBuffer = await sharp(buffer)
+      .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toBuffer();
+    await fs.ensureDir(path.dirname(thumbPath));
+    await fs.writeFile(thumbPath, thumbBuffer);
+    res.setHeader('Content-Type', 'image/webp');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(thumbBuffer);
+  } catch (err) {
+    console.error('缩略图重生失败', err.message);
+    next();
+  }
+});
+
 app.use('/uploads', express.static(uploadDir));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -271,11 +321,12 @@ async function loadDb() {
         console.error('迁移图片失败', err.message);
       }
       if (img.thumbName && !img.thumbName.includes('/')) {
-        const newThumbRel = `${year}/${month}/${img.thumbName}`;
+        const newThumbRel = `thumbs/${year}/${month}/${img.thumbName}`;
         const oldThumb = path.join(uploadDir, 'thumbs', img.thumbName);
         const newThumb = path.join(uploadDir, newThumbRel);
         try {
           if (await fs.pathExists(oldThumb)) {
+            await fs.ensureDir(path.dirname(newThumb));
             await fs.move(oldThumb, newThumb, { overwrite: true });
             img.thumbName = newThumbRel;
             migrated = true;
@@ -286,6 +337,25 @@ async function loadDb() {
       }
     }
   }
+  // 迁移 v1.1.2 缩略图：从 YYYY/MM/xxx 搬到 thumbs/YYYY/MM/xxx
+  for (const img of data.images) {
+    if (img.thumbName && img.thumbName.includes('/') && !img.thumbName.startsWith('thumbs/')) {
+      const newThumbRel = `thumbs/${img.thumbName}`;
+      const oldPath = path.join(uploadDir, img.thumbName);
+      const newPath = path.join(uploadDir, newThumbRel);
+      try {
+        if (await fs.pathExists(oldPath)) {
+          await fs.ensureDir(path.dirname(newPath));
+          await fs.move(oldPath, newPath, { overwrite: true });
+          img.thumbName = newThumbRel;
+          migrated = true;
+        }
+      } catch (err) {
+        console.error('迁移缩略图(v1.1.2)失败', err.message);
+      }
+    }
+  }
+
   if (migrated) {
     await saveDb(data);
   }
@@ -369,10 +439,10 @@ async function rebuildImagesFromUploads(db, ownerId = 'admin') {
       if (stat.isDirectory()) {
         await walk(rel);
       } else {
-        // 跳过缩略图，由原图去关联
-        if (entry.endsWith('_thumb.webp')) continue;
+        // 跳过缩略图目录和缩略图文件
+        if (entry.endsWith('_thumb.webp') || dirRel === 'thumbs') continue;
         const id = path.parse(entry).name;
-        const thumbRel = rel.replace(/\.[^/.]+$/, '_thumb.webp');
+        const thumbRel = `thumbs/${dirRel}/${id}_thumb.webp`;
         const thumbExists = await fs.pathExists(path.join(uploadDir, thumbRel));
         images.push({
           id,
@@ -407,8 +477,8 @@ async function collectUploadFiles() {
       if (stat.isDirectory()) {
         await walk(rel);
       } else {
-        if (entry.endsWith('_thumb.webp')) continue;
-        const thumbRel = rel.replace(/\.[^/.]+$/, '_thumb.webp');
+        if (entry.endsWith('_thumb.webp') || dirRel === 'thumbs') continue;
+        const thumbRel = `thumbs/${dirRel}/${path.parse(entry).name}_thumb.webp`;
         const thumbExists = await fs.pathExists(path.join(uploadDir, thumbRel));
         files.push({
           rel,
@@ -980,8 +1050,10 @@ app.post('/api/upload', requireAuth, upload.single('image'), async (req, res) =>
     await fs.writeFile(filePath, processed.buffer);
 
     const thumbNameOnly = `${id}_thumb.webp`;
-    const thumbName = `${year}/${month}/${thumbNameOnly}`;
-    await fs.writeFile(path.join(uploadDir, thumbName), thumbBuffer);
+    const thumbName = `thumbs/${year}/${month}/${thumbNameOnly}`;
+    const thumbPath = path.join(uploadDir, thumbName);
+    await fs.ensureDir(path.dirname(thumbPath));
+    await fs.writeFile(thumbPath, thumbBuffer);
 
     const baseUrl = getBaseUrl(req);
     const fileUrl = `${baseUrl}/uploads/${filename}`;

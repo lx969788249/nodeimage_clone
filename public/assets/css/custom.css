@@ -732,3 +732,188 @@ body, html {
 #resultContainer {
   margin-top: 8px;
 }
+
+/* ===== 设置页面 ===== */
+.settings-view {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 40px;
+}
+
+.settings-page {
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 32px;
+}
+
+.settings-header {
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-header h2 {
+  margin: 0 0 4px;
+  font-size: 1.5rem;
+}
+
+.settings-header p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+}
+
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.settings-section {
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  position: relative;
+  transition: border-color .3s;
+}
+
+/* 脏标记：红框 + 未保存标签 */
+.settings-section.dirty {
+  border-color: #e74c3c;
+}
+
+.settings-section .dirty-badge {
+  display: none;
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 11px;
+  color: #e74c3c;
+  font-weight: 600;
+  background: #fde8e8;
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+
+.settings-section.dirty .dirty-badge {
+  display: inline-block;
+}
+
+/* 统一保存按钮 */
+.settings-save-bar {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-section h3 {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+  color: var(--color-text-primary);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.setting-row {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.setting-row:last-child {
+  margin-bottom: 0;
+}
+
+.setting-row .setting-title {
+  min-width: 100px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+}
+
+.setting-row .text-input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.settings-section .quality-slider {
+  width: 100%;
+  max-width: 400px;
+}
+
+.backup-details {
+  margin-top: 4px;
+}
+
+.backup-details summary {
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.95rem;
+  padding: 4px 0;
+  color: var(--color-primary, #3b82f6);
+}
+
+.user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .settings-page {
+    padding: 16px;
+  }
+  .settings-section {
+    padding: 12px;
+  }
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 上传区域保持原来的大小 */
+
+@media (max-width: 640px) {
+  .upload-card {
+    height: auto;
+    min-height: 260px;
+  }
+}
+
+/* 标签悬浮提示 */
+.has-tip {
+  display: inline-block;
+  position: relative;
+  border-bottom: 1px dashed var(--color-text-secondary);
+}
+.has-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  white-space: nowrap;
+  background: #333;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 400;
+  padding: 4px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s;
+  z-index: 100;
+}
+.has-tip:hover::after {
+  opacity: 1;
+}

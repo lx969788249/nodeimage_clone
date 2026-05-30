@@ -26,6 +26,7 @@
           <button class="tailwind-btn" id="backBtn2" style="display: none;">返回</button>
           <button class="tailwind-btn" id="apiBtn">API</button>
           <button class="tailwind-btn" id="historyBtn">历史 <span id="totalImages">0</span></button>
+          <button class="tailwind-btn" id="settingsNavBtn">设置</button>
         </div>
         <div class="user-auth-section">
           <div class="user-controls" id="userControls" style="display: none;">
@@ -60,15 +61,8 @@
   <div class="container">
     <main class="main" id="mainView">
       <div class="flip-card">
-        <div class="flip-card-inner" id="flipCardInner">
-          <!-- 上传面 -->
+        <div class="flip-card-inner">
           <div class="upload-area" id="uploadArea">
-            <button class="card-corner-btn" id="settingsBtn" title="设置">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-                <path d="M495.9 166.6c3.2 8.7 .5 18.4-6.4 24.6l-43.3 39.4c1.1 8.3 1.7 16.8 1.7 25.4s-.6 17.1-1.7 25.4l43.3 39.4c6.9 6.2 9.6 15.9 6.4 24.6c-4.4 11.9-9.7 23.3-15.8 34.3l-4.7 8.1c-6.6 11-14 21.4-22.1 31.2c-5.9 7.2-15.7 9.6-24.5 6.8l-55.7-17.7c-13.4 10.3-28.2 18.9-44 25.4l-12.5 57.1c-2 9.1-9 16.3-18.2 17.8c-13.8 2.3-28 3.5-42.5 3.5s-28.7-1.2-42.5-3.5c-9.2-1.5-16.2-8.7-18.2-17.8l-12.5-57.1c-15.8-6.5-30.6-15.1-44-25.4L83.1 425.9c-8.8 2.8-18.6 .3-24.5-6.8c-8.1-9.8-15.5-20.2-22.1-31.2l-4.7-8.1c-6.1-11-11.4-22.4-15.8-34.3c-3.2-8.7-.5-18.4 6.4-24.6l43.3-39.4C64.6 273.1 64 264.6 64 256s.6-17.1 1.7-25.4L22.4 191.2c-6.9-6.2-9.6-15.9-6.4-24.6c4.4-11.9 9.7-23.3 15.8-34.3l4.7-8.1c6.6-11 14-21.4 22.1-31.2c5.9-7.2 15.7-9.6 24.5-6.8l55.7 17.7c13.4-10.3 28.2-18.9 44-25.4l12.5-57.1c2-9.1 9-16.3 18.2-17.8C227.3 1.2 241.5 0 256 0s28.7 1.2 42.5 3.5c9.2 1.5 16.2 8.7 18.2 17.8l12.5 57.1c15.8 6.5 30.6 15.1 44 25.4l55.7-17.7c8.8-2.8 18.6-.3 24.5 6.8c8.1 9.8 15.5 20.2 22.1 31.2l4.7 8.1c6.1 11 11.4 22.4 15.8 34.3zM256 336a80 80 0 1 0 0-160 80 80 0 1 0 0 160z"/>
-              </svg>
-              <div class="settings-tooltip" id="settingsTooltip">点击这里进行设置</div>
-            </button>
             <div class="upload-content">
               <div class="folder-container">
                 <div class="folder">
@@ -80,195 +74,22 @@
                 </div>
               </div>
               <h3>点击或拖拽上传图片</h3>
-              <p>支持 JPG、JPEG、PNG、GIF、WebP、AVIF、SVG 等格式，最大 100MB</p>
+              <p>支持 JPG、JPEG、PNG、GIF、WebP、AVIF 等格式，最大 100MB</p>
               <p class="paste-hint">💡 你也可以直接 <kbd>Ctrl+V</kbd> 粘贴剪贴板中的图片</p>
               <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp,image/avif" multiple style="display:none;">
             </div>
           </div>
-          <!-- 设置面 -->
-          <div class="setting-area" id="settingArea">
-            <button class="tailwind-btn" id="backToUploadBtn" title="返回">返回</button>
-            <div class="settings-content">
-              <h3>
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-                  <path d="M495.9 166.6c3.2 8.7 .5 18.4-6.4 24.6l-43.3 39.4c1.1 8.3 1.7 16.8 1.7 25.4s-.6 17.1-1.7 25.4l43.3 39.4c6.9 6.2 9.6 15.9 6.4 24.6c-4.4 11.9-9.7 23.3-15.8 34.3l-4.7 8.1c-6.6 11-14 21.4-22.1 31.2c-5.9 7.2-15.7 9.6-24.5 6.8l-55.7-17.7c-13.4 10.3-28.2 18.9-44 25.4l-12.5 57.1c-2 9.1-9 16.3-18.2 17.8c-13.8 2.3-28 3.5-42.5 3.5s-28.7-1.2-42.5-3.5c-9.2-1.5-16.2-8.7-18.2-17.8l-12.5-57.1c-15.8-6.5-30.6-15.1-44-25.4L83.1 425.9c-8.8 2.8-18.6 .3-24.5-6.8c-8.1-9.8-15.5-20.2-22.1-31.2l-4.7-8.1c-6.1-11-11.4-22.4-15.8-34.3c-3.2-8.7-.5-18.4 6.4-24.6l43.3-39.4C64.6 273.1 64 264.6 64 256s.6-17.1 1.7-25.4L22.4 191.2c-6.9-6.2-9.6-15.9-6.4-24.6c4.4-11.9 9.7-23.3 15.8-34.3l4.7-8.1c6.6-11 14-21.4 22.1-31.2c5.9-7.2 15.7-9.6 24.5-6.8l55.7 17.7c13.4-10.3 28.2-18.9 44-25.4l12.5-57.1c2-9.1 9-16.3 18.2-17.8C227.3 1.2 241.5 0 256 0s28.7 1.2 42.5 3.5c9.2 1.5 16.2 8.7 18.2 17.8l12.5 57.1c15.8 6.5 30.6 15.1 44 25.4l55.7-17.7c8.8-2.8 18.6-.3 24.5 6.8c8.1 9.8 15.5 20.2 22.1 31.2l4.7 8.1c6.1 11 11.4 22.4 15.8 34.3zM256 336a80 80 0 1 0 0-160 80 80 0 1 0 0 160z"/>
-                </svg>
-                图片处理设置
-              </h3>
-              <p class="settings-desc">配置您的图片上传和处理偏好</p>
-              <div class="settings-options">
-                <div class="setting-group">
-                  <h4>图片处理</h4>
-                  <div class="setting-item">
-                    <label class="checkbox-container">
-                      <input type="checkbox" id="compressToWebp" name="compressToWebp" checked>
-                      <span class="checkmark"></span>
-                      <div class="setting-label">
-                        <span class="setting-title">压缩并转换为WebP</span>
-                        <span class="setting-desc">移除元数据并减小文件大小</span>
-                      </div>
-                    </label>
-                  </div>
-                  <div class="setting-item quality-slider-container" id="qualitySliderContainer">
-                    <div class="quality-slider-wrapper">
-                      <label class="quality-label">压缩质量:</label>
-                      <div class="slider-container">
-                        <input type="range" id="webpQuality" min="10" max="100" value="95" class="quality-slider">
-                        <div class="quality-display">
-                          <span class="quality-value" id="qualityValue">95</span>
-                          <span class="quality-type" id="qualityType">高质量</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="setting-group">
-                  <h4>水印设置</h4>
-                  <div class="setting-item">
-                    <label class="checkbox-container">
-                      <input type="checkbox" id="autoWatermark" name="autoWatermark">
-                      <span class="checkmark"></span>
-                      <div class="setting-label">
-                        <span class="setting-title">自动水印</span>
-                        <span class="setting-desc">为上传的图片自动添加水印标识</span>
-                      </div>
-                    </label>
-                  </div>
-                  <div class="setting-item">
-                    <div class="setting-label full-input">
-                      <span class="setting-title">水印内容</span>
-                      <input type="text" id="watermarkContent" placeholder="例如：nodeimage.com" class="text-input">
-                    </div>
-                  </div>
-                </div>
-                <div class="setting-group">
-                  <h4>便捷功能</h4>
-                  <div class="setting-item">
-                    <label class="checkbox-container">
-                      <input type="checkbox" id="autoCopyLink" name="autoCopyLink">
-                      <span class="checkmark"></span>
-                      <div class="setting-label">
-                        <span class="setting-title">上传成功自动复制链接</span>
-                        <span class="setting-desc">图片上传后根据选择的格式自动复制到剪贴板</span>
-                      </div>
-                    </label>
-                  </div>
-                  <div class="setting-item">
-                    <div class="checkbox-with-input">
-                      <label class="checkbox-container">
-                        <input type="checkbox" id="autoDelete" name="autoDelete">
-                        <span class="checkmark"></span>
-                        <div class="setting-label">
-                          <span class="setting-title">自动删除上传文件</span>
-                          <span class="setting-desc">上传的图片将在指定天数后自动删除</span>
-                        </div>
-                      </label>
-                      <div class="days-input-inline" id="daysInputInline" style="display: none;">
-                        <input type="text" id="deleteDays" value="30" placeholder="30">
-                        <span>天</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <h3 class="personal-title" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="20" height="20">
-                  <path d="M495.9 166.6c3.2 8.7 .5 18.4-6.4 24.6l-43.3 39.4c1.1 8.3 1.7 16.8 1.7 25.4s-.6 17.1-1.7 25.4l43.3 39.4c6.9 6.2 9.6 15.9 6.4 24.6c-4.4 11.9-9.7 23.3-15.8 34.3l-4.7 8.1c-6.6 11-14 21.4-22.1 31.2c-5.9 7.2-15.7 9.6-24.5 6.8l-55.7-17.7c-13.4 10.3-28.2 18.9-44 25.4l-12.5 57.1c-2 9.1-9 16.3-18.2 17.8c-13.8 2.3-28 3.5-42.5 3.5s-28.7-1.2-42.5-3.5c-9.2-1.5-16.2-8.7-18.2-17.8l-12.5-57.1c-15.8-6.5-30.6-15.1-44-25.4L83.1 425.9c-8.8 2.8-18.6 .3-24.5-6.8c-8.1-9.8-15.5-20.2-22.1-31.2l-4.7-8.1c-6.1-11-11.4-22.4-15.8-34.3c-3.2-8.7-.5-18.4 6.4-24.6l43.3-39.4C64.6 273.1 64 264.6 64 256s.6-17.1 1.7-25.4L22.4 191.2c-6.9-6.2-9.6-15.9-6.4-24.6c4.4-11.9 9.7-23.3 15.8-34.3l4.7-8.1c6.6-11 14-21.4 22.1-31.2c5.9-7.2 15.7-9.6 24.5-6.8l55.7 17.7c13.4-10.3 28.2-18.9 44-25.4l12.5-57.1c2-9.1 9-16.3 18.2-17.8C227.3 1.2 241.5 0 256 0s28.7 1.2 42.5 3.5c9.2 1.5 16.2 8.7 18.2 17.8l12.5 57.1c15.8 6.5 30.6 15.1 44 25.4l55.7-17.7c8.8-2.8 18.6-.3 24.5 6.8c8.1 9.8 15.5 20.2 22.1 31.2l4.7 8.1c6.1 11 11.4 22.4 15.8 34.3zM256 336a80 80 0 1 0 0-160 80 80 0 1 0 0 160z"/>
-                </svg>
-                图床个性化设置
-              </h3>
-              <div class="settings-options brand-options" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
-                <div class="setting-group">
-                  <h4>名称</h4>
-                  <input type="text" id="brandNameInput" placeholder="Nodeimage" class="text-input">
-                </div>
-                <div class="setting-group">
-                  <h4>副标题</h4>
-                  <input type="text" id="brandSubtitleInput" placeholder="NodeSeek专用图床·克隆版" class="text-input">
-                </div>
-                <div class="setting-group">
-                  <h4>图标 URL/Base64</h4>
-                  <input type="text" id="brandIconInput" placeholder="http://... 或 data:image/png;base64,..." class="text-input">
-                </div>
-                <div class="setting-group">
-                  <h4>允许注册</h4>
-                  <label class="checkbox-container" style="margin-bottom:0;">
-                    <input type="checkbox" id="allowRegisterInput">
-                    <span class="checkmark"></span>
-                    <div class="setting-label">
-                      <span class="setting-title">开启后允许新用户注册</span>
-                      <span class="setting-desc">默认关闭，仅管理员可登录使用</span>
-                    </div>
-                  </label>
-                </div>
-                <div class="setting-group">
-                  <h4>用户管理（仅管理员）</h4>
-                  <div id="usersList" class="user-list"></div>
-                </div>
-                <div class="setting-group">
-                  <h4>备份 / 恢复</h4>
-                  <div class="backup-actions">
-                    <button class="tailwind-btn apply-brand-btn" id="backupDownloadBtn">备份并下载</button>
-                    <button class="tailwind-btn apply-brand-btn" id="backupRestoreBtn">恢复备份</button>
-                    <input type="file" id="backupFileInput" accept=".tar.gz,.tgz,application/gzip" style="display:none;">
-                  </div>
-                  <div class="setting-desc">上传导出的备份包并应用</div>
-                </div>
-                <div class="setting-group">
-                  <h4>自动备份（仅管理员）</h4>
-                  <div class="setting-item">
-                    <div class="setting-label">
-                      <span class="setting-title">备份间隔（小时）</span>
-                      <input type="number" id="backupIntervalHours" value="24" min="1" max="720" class="text-input" style="width:100px;">
-                    </div>
-                  </div>
-                  <div class="setting-item">
-                    <div class="setting-label">
-                      <span class="setting-title">保留备份数量</span>
-                      <input type="number" id="backupKeepCount" value="7" min="1" max="365" class="text-input" style="width:100px;">
-                    </div>
-                  </div>
-                  <div class="setting-item">
-                    <details class="backup-details">
-                      <summary>S3 兼容存储设置</summary>
-                      <div class="setting-label full-input"><span class="setting-title">Endpoint</span><input type="text" id="s3Endpoint" placeholder="https://xxx.r2.cloudflarestorage.com" class="text-input"></div>
-                      <div class="setting-label full-input"><span class="setting-title">Region</span><input type="text" id="s3Region" placeholder="auto" class="text-input"></div>
-                      <div class="setting-label full-input"><span class="setting-title">Bucket</span><input type="text" id="s3Bucket" placeholder="my-backups" class="text-input"></div>
-                      <div class="setting-label full-input"><span class="setting-title">Access Key</span><input type="text" id="s3AccessKey" class="text-input"></div>
-                      <div class="setting-label full-input"><span class="setting-title">Secret Key</span><input type="password" id="s3SecretKey" class="text-input"></div>
-                      <button class="tailwind-btn" id="testS3Btn" style="margin-top:6px;">测试 S3 连接</button>
-                      <span id="testS3Result" style="margin-left:8px;font-size:12px;"></span>
-                    </details>
-                  </div>
-                  <div class="setting-item">
-                    <details class="backup-details">
-                      <summary>Webhook 设置</summary>
-                      <div class="setting-label full-input"><span class="setting-title">Webhook URL</span><input type="text" id="backupWebhookUrl" placeholder="https://your-server.com/upload" class="text-input"></div>
-                      <button class="tailwind-btn" id="testWebhookBtn" style="margin-top:6px;">测试 Webhook</button>
-                      <span id="testWebhookResult" style="margin-left:8px;font-size:12px;"></span>
-                    </details>
-                  </div>
-                  <button class="tailwind-btn" id="triggerBackupBtn" style="margin-top:6px;">立即备份</button>
-                  <span id="backupStatus" style="margin-left:8px;font-size:12px;"></span>
-                </div>
-              </div>
-              <div style="margin-top:10px;text-align:left;">
-                <button class="tailwind-btn apply-brand-btn" id="saveBackupSettingsBtn">保存备份设置</button>
-                <button class="tailwind-btn apply-brand-btn" id="applyBrandingBtn">应用图床设置</button>
-              </div>
-            </div>
-          </div>
         </div>
-        <div class="copy-all-bar" id="resultCopyAllBar" style="display: none;">
-          <div class="copy-all-group">
-            <button class="copy-pill pill-direct" id="copyAllDirectBtn">复制全部直链</button>
-            <button class="copy-pill pill-html" id="copyAllHtmlBtn">复制全部 HTML</button>
-            <button class="copy-pill pill-md" id="copyAllMdBtn">复制全部 Markdown</button>
-            <button class="copy-pill pill-bb" id="copyAllBbBtn">复制全部 BB</button>
-          </div>
-        </div>
-        <div class="result-container" id="resultContainer" style="display: none;"></div>
       </div>
+      <div class="copy-all-bar" id="resultCopyAllBar" style="display: none;">
+        <div class="copy-all-group">
+          <button class="copy-pill pill-direct" id="copyAllDirectBtn">复制全部直链</button>
+          <button class="copy-pill pill-html" id="copyAllHtmlBtn">复制全部 HTML</button>
+          <button class="copy-pill pill-md" id="copyAllMdBtn">复制全部 Markdown</button>
+          <button class="copy-pill pill-bb" id="copyAllBbBtn">复制全部 BB</button>
+        </div>
+      </div>
+      <div class="result-container" id="resultContainer" style="display: none;"></div>
 
       <div class="history-view" id="historyView" style="display: none;">
         <div class="recent-images" id="recentImages">
@@ -420,6 +241,160 @@
           </div>
         </div>
       </div>
+
+      <!-- 设置页 -->
+      <div class="settings-view" id="settingsView" style="display: none;">
+        <div class="settings-page">
+          <div class="settings-header">
+            <h2>设置</h2>
+            <p>配置图片上传偏好、图床品牌和管理功能</p>
+          </div>
+          <div class="settings-sections">
+            <!-- 图片处理 -->
+            <section class="settings-section" id="imgSection" data-save="local">
+              <span class="dirty-badge">未保存</span>
+              <h3>图片处理</h3>
+              <div class="setting-row">
+                <label class="checkbox-container">
+                  <input type="checkbox" id="compressToWebp" name="compressToWebp" checked>
+                  <span class="checkmark"></span>
+                  <div class="setting-label"><span class="setting-title">压缩并转换为WebP</span><span class="setting-desc">移除元数据并减小文件大小</span></div>
+                </label>
+              </div>
+              <div class="setting-row quality-slider-container" id="qualitySliderContainer">
+                <label class="quality-label">压缩质量: <strong id="qualityValue">95</strong> — <span id="qualityType">高质量</span></label>
+                <input type="range" id="webpQuality" min="10" max="100" value="95" class="quality-slider">
+              </div>
+            </section>
+
+            <!-- 水印 -->
+            <section class="settings-section" id="watermarkSection" data-save="local">
+              <span class="dirty-badge">未保存</span>
+              <h3>水印</h3>
+              <div class="setting-row">
+                <label class="checkbox-container">
+                  <input type="checkbox" id="autoWatermark" name="autoWatermark">
+                  <span class="checkmark"></span>
+                  <div class="setting-label"><span class="setting-title">自动添加水印</span><span class="setting-desc">为上传的图片添加文字水印标识</span></div>
+                </label>
+              </div>
+              <div class="setting-row">
+                <label class="setting-title">水印内容</label>
+                <input type="text" id="watermarkContent" placeholder="例如：nodeimage.com" class="text-input">
+              </div>
+            </section>
+
+            <!-- 便捷功能 -->
+            <section class="settings-section" id="quickSection" data-save="local">
+              <span class="dirty-badge">未保存</span>
+              <h3>便捷功能</h3>
+              <div class="setting-row">
+                <label class="checkbox-container">
+                  <input type="checkbox" id="autoCopyLink" name="autoCopyLink">
+                  <span class="checkmark"></span>
+                  <div class="setting-label"><span class="setting-title">上传成功自动复制链接</span><span class="setting-desc">图片上传后根据选择的格式自动复制到剪贴板</span></div>
+                </label>
+              </div>
+              <div class="setting-row">
+                <label class="checkbox-container">
+                  <input type="checkbox" id="autoDelete" name="autoDelete">
+                  <span class="checkmark"></span>
+                  <div class="setting-label"><span class="setting-title">自动删除上传文件</span><span class="setting-desc">上传的图片将在指定天数后自动删除</span></div>
+                </label>
+                <div class="days-input-inline" id="daysInputInline" style="display: none;">
+                  <input type="text" id="deleteDays" value="30" placeholder="30"><span>天后删除</span>
+                </div>
+              </div>
+            </section>
+
+            <!-- 图床自定义 -->
+            <section class="settings-section" id="adminSection" data-save="branding">
+              <span class="dirty-badge">未保存</span>
+              <h3>图床自定义</h3>
+              <div class="settings-grid">
+                <div class="setting-row"><label class="setting-title">站点名称</label><input type="text" id="brandNameInput" placeholder="Nodeimage" class="text-input"></div>
+                <div class="setting-row"><label class="setting-title">副标题</label><input type="text" id="brandSubtitleInput" placeholder="NodeSeek专用图床·克隆版" class="text-input"></div>
+                <div class="setting-row"><label class="setting-title">图标 URL</label><input type="text" id="brandIconInput" placeholder="http://... 或 data:image/png;base64,..." class="text-input"></div>
+              </div>
+            </section>
+
+            <!-- 用户注册 -->
+            <section class="settings-section" id="registerSection" data-save="branding">
+              <span class="dirty-badge">未保存</span>
+              <h3>用户注册</h3>
+              <div class="setting-row">
+                <label class="checkbox-container">
+                  <input type="checkbox" id="allowRegisterInput">
+                  <span class="checkmark"></span>
+                  <div class="setting-label"><span class="setting-title">允许用户注册</span><span class="setting-desc">默认关闭，仅管理员可创建账号</span></div>
+                </label>
+              </div>
+            </section>
+
+            <!-- 用户管理 -->
+            <section class="settings-section" id="userManagementSection">
+              <h3>用户管理</h3>
+              <div id="usersList" class="user-list"></div>
+            </section>
+
+            <!-- 备份 / 恢复 -->
+            <section class="settings-section" id="backupSection">
+              <h3>备份 / 恢复</h3>
+              <div class="setting-row">
+                <button class="tailwind-btn" id="backupDownloadBtn">打包下载备份</button>
+                <button class="tailwind-btn" id="backupRestoreBtn" style="margin-left:8px;">上传恢复备份</button>
+                <input type="file" id="backupFileInput" accept=".tar.gz,.tgz,application/gzip" style="display:none;">
+              </div>
+            </section>
+
+            <!-- 自动备份 -->
+            <section class="settings-section" id="autoBackupSection" data-save="backup">
+              <span class="dirty-badge">未保存</span>
+              <h3>自动备份</h3>
+              <div class="settings-grid">
+                <div class="setting-row"><label class="setting-title">备份间隔（小时）</label><input type="number" id="backupIntervalHours" value="24" min="1" max="720" class="text-input" style="width:100px;"></div>
+                <div class="setting-row"><label class="setting-title">保留备份数量</label><input type="number" id="backupKeepCount" value="7" min="1" max="365" class="text-input" style="width:100px;"></div>
+              </div>
+              <details class="backup-details" style="margin-top:8px;">
+                <summary>S3 兼容存储设置</summary>
+                <div class="settings-grid" style="margin-top:8px;">
+                  <div class="setting-row">
+                    <label class="setting-title">存储服务商</label>
+                    <select id="s3Provider" class="text-input" style="flex:1;">
+                      <option value="">自定义</option>
+                      <option value="r2">Cloudflare R2</option>
+                      <option value="b2">Backblaze B2</option>
+                      <option value="aws">Amazon S3</option>
+                      <option value="wasabi">Wasabi</option>
+                      <option value="do">DigitalOcean Spaces</option>
+                      <option value="minio">MinIO（自建）</option>
+                    </select>
+                  </div>
+                  <div class="setting-row"><label class="setting-title"><span class="has-tip" data-tip="S3 服务的 API 地址，选服务商会自动填写">服务地址</span></label><input type="text" id="s3Endpoint" placeholder="https://xxx.s3.amazonaws.com" class="text-input"></div>
+                  <div class="setting-row"><label class="setting-title"><span class="has-tip" data-tip="存储桶所在的地理区域，选服务商会自动填写">区域</span></label><input type="text" id="s3Region" placeholder="us-east-1" class="text-input"></div>
+                  <div class="setting-row"><label class="setting-title"><span class="has-tip" data-tip="存储桶名称，类似'文件夹'，在服务商后台创建">存储桶</span></label><input type="text" id="s3Bucket" placeholder="my-backups" class="text-input"></div>
+                  <div class="setting-row"><label class="setting-title"><span class="has-tip" data-tip="相当于'用户名'，在存储服务商后台生成">访问密钥</span></label><input type="text" id="s3AccessKey" class="text-input" placeholder="Access Key ID"></div>
+                  <div class="setting-row"><label class="setting-title"><span class="has-tip" data-tip="相当于'密码'，通常只在创建时显示一次，请妥善保存">秘密密钥</span></label><input type="password" id="s3SecretKey" class="text-input" placeholder="Secret Access Key"></div>
+                </div>
+                <button class="tailwind-btn" id="testS3Btn" style="margin-top:8px;">测试 S3 连接</button><span id="testS3Result" style="margin-left:8px;font-size:12px;"></span>
+              </details>
+              <details class="backup-details" style="margin-top:8px;">
+                <summary>Webhook 设置</summary>
+                <div class="setting-row" style="margin-top:8px;"><label class="setting-title"><span class="has-tip" data-tip="备份文件会通过 HTTP POST 发送到这个地址，可搭配自建服务或第三方工具使用">回调地址</span></label><input type="text" id="backupWebhookUrl" placeholder="https://your-server.com/upload" class="text-input" style="flex:1;"></div>
+                <button class="tailwind-btn" id="testWebhookBtn" style="margin-top:8px;">测试 Webhook</button><span id="testWebhookResult" style="margin-left:8px;font-size:12px;"></span>
+              </details>
+              <div style="margin-top:12px;display:flex;align-items:center;gap:8px;">
+                <button class="tailwind-btn" id="triggerBackupBtn">立即备份</button>
+                <span id="backupStatus" style="font-size:12px;"></span>
+              </div>
+            </section>
+          </div>
+          <div class="settings-save-bar">
+            <button class="tailwind-btn apply-brand-btn" id="saveAllSettingsBtn">保存所有设置</button>
+          </div>
+        </div>
+      </div>
+
     </main>
   </div>
 
