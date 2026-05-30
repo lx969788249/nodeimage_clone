@@ -33,7 +33,6 @@ jobs:
         with:
           images: lx969788249/nodeimage_clone
           tags: |
-            type=ref,event=branch
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
 
