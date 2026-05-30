@@ -78,20 +78,13 @@ const els = {
   newCredFields: document.getElementById('newCredFields'),
   changeCredsSubmit: document.getElementById('changeCredsSubmit'),
   changeCredsCancel: document.getElementById('changeCredsCancel'),
-  userLevel: document.getElementById('userLevel'),
-  dailyUploads: document.getElementById('dailyUploads'),
-  dailyUploadLimit: document.getElementById('dailyUploadLimit'),
   brandName: document.getElementById('brandName'),
   brandSubtitle: document.getElementById('brandSubtitle'),
   brandLogo: document.getElementById('brandLogo'),
   brandNameInput: document.getElementById('brandNameInput'),
   brandSubtitleInput: document.getElementById('brandSubtitleInput'),
   brandIconInput: document.getElementById('brandIconInput'),
-  footerMarkdownInput: document.getElementById('footerMarkdownInput'),
   applyBrandingBtn: document.getElementById('applyBrandingBtn'),
-  brandNameDisplay: document.getElementById('brandName'),
-  brandSubtitleDisplay: document.getElementById('brandSubtitle'),
-  brandLogoDisplay: document.getElementById('brandLogo'),
   selectAllCheckbox: document.getElementById('selectAllCheckbox'),
   selectionText: document.getElementById('selectionText'),
   batchActionsBar: document.getElementById('batchActionsBar'),
@@ -118,7 +111,6 @@ const allowedTypes = [
   'image/jpg',
   'image/gif',
   'image/webp',
-  'image/svg+xml',
   'image/avif'
 ];
 
@@ -1097,8 +1089,6 @@ function setupEventListeners() {
   if (els.brandNameInput) els.brandNameInput.addEventListener('input', handleBrandingInput);
   if (els.brandSubtitleInput) els.brandSubtitleInput.addEventListener('input', handleBrandingInput);
   if (els.brandIconInput) els.brandIconInput.addEventListener('input', handleBrandingInput);
-  if (els.footerMarkdownInput) els.footerMarkdownInput.addEventListener('input', handleBrandingInput);
-
   bindModalInteractions();
 }
 
@@ -1143,33 +1133,29 @@ function handleBrandingInput() {
   state.branding.name = els.brandNameInput ? els.brandNameInput.value : state.branding.name;
   state.branding.subtitle = els.brandSubtitleInput ? els.brandSubtitleInput.value : state.branding.subtitle;
   state.branding.icon = els.brandIconInput ? els.brandIconInput.value : state.branding.icon;
-  state.branding.footer = els.footerMarkdownInput ? els.footerMarkdownInput.value : state.branding.footer;
-}
-
-function simpleMarkdown(md) {
-  if (!md) return '';
-  let html = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  html = html.replace(/\\n/g, '<br>').replace(/\\r/g, '<br>');
-  html = html.replace(/\\[(.+?)\\]\\((https?:[^\\)]+)\\)/g, '<a href=\"$2\" target=\"_blank\">$1<\\/a>');
-  return html;
+  // footer 字段已通过 applyBranding 直接渲染
 }
 
 function applyBranding() {
   const displayName = state.branding.name || 'Nodeimage';
   const displaySubtitle = state.branding.subtitle || 'NodeSeek专用图床·克隆版';
   const displayFooter = state.branding.footer || 'Nodeimage 克隆版 · 本地演示';
-  const displayIcon = state.branding.icon || (els.brandLogoDisplay ? (els.brandLogoDisplay.dataset.default || els.brandLogoDisplay.src) : '');
+  const defaultLogo = els.brandLogo?.dataset?.default || els.brandLogo?.src || '';
+  const displayIcon = state.branding.icon || defaultLogo;
 
-  if (els.brandNameDisplay) els.brandNameDisplay.textContent = displayName;
-  if (els.brandSubtitleDisplay) els.brandSubtitleDisplay.textContent = displaySubtitle;
-  if (els.brandLogoDisplay) {
-    if (state.branding.icon) els.brandLogoDisplay.src = state.branding.icon;
-    else els.brandLogoDisplay.src = els.brandLogoDisplay.dataset.default || els.brandLogoDisplay.src;
+  if (els.brandName) els.brandName.textContent = displayName;
+  if (els.brandSubtitle) els.brandSubtitle.textContent = displaySubtitle;
+  if (els.brandLogo) {
+    if (state.branding.icon) els.brandLogo.src = state.branding.icon;
+    else els.brandLogo.src = defaultLogo;
   }
   if (els.brandNameInput) els.brandNameInput.value = state.branding.name;
   if (els.brandSubtitleInput) els.brandSubtitleInput.value = state.branding.subtitle;
   if (els.brandIconInput) els.brandIconInput.value = state.branding.icon || '';
-  if (els.footerMarkdownInput) els.footerMarkdownInput.value = state.branding.footer || '';
+
+  // 动态渲染页脚
+  const footer = document.querySelector('.global-footer');
+  if (footer) footer.innerHTML = displayFooter;
 
   // 同步浏览器标题和 Favicon
   document.title = displayName || document.title;
@@ -1206,7 +1192,6 @@ function setSettingsEnabled(isAuth) {
     els.brandNameInput,
     els.brandSubtitleInput,
     els.brandIconInput,
-    els.footerMarkdownInput,
     els.applyBrandingBtn
   ].filter(Boolean);
   inputs.forEach((el) => {

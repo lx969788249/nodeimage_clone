@@ -13,19 +13,38 @@ const __dirname = process.cwd();
 const app = express();
 
 const PORT = process.env.PORT || 7878;
+
+// --- 简易频率限制 ---
+const rateLimitMap = new Map();
+function rateLimit({ windowMs = 60000, max = 10 }) {
+  return (req, res, next) => {
+    const key = req.ip || req.connection.remoteAddress;
+    const now = Date.now();
+    if (!rateLimitMap.has(key)) rateLimitMap.set(key, []);
+    const entries = rateLimitMap.get(key).filter((t) => now - t < windowMs);
+    if (entries.length >= max) {
+      return res.status(429).json({ message: '请求过于频繁，请稍后再试' });
+    }
+    entries.push(now);
+    rateLimitMap.set(key, entries);
+    next();
+  };
+}
+// 每5分钟清理一次过期记录
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entries] of rateLimitMap) {
+    const filtered = entries.filter((t) => now - t < 60000);
+    if (filtered.length) rateLimitMap.set(key, filtered);
+    else rateLimitMap.delete(key);
+  }
+}, 300000);
 const CONFIG_BASE_URL = process.env.BASE_URL ? process.env.BASE_URL.replace(/\/$/, '') : '';
 const uploadDir = path.join(__dirname, 'uploads');
 const thumbDir = path.join(uploadDir, 'thumbs');
 const dataFile = path.join(__dirname, 'data', 'db.json');
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 const DAILY_UPLOAD_LIMIT = 200;
-
-function parseBool(val, defaultVal = true) {
-  if (val === undefined || val === null) return defaultVal;
-  if (typeof val === 'boolean') return val;
-  if (typeof val === 'string') return val.toLowerCase() === 'true';
-  return Boolean(val);
-}
 
 function ensureDefaultUser(db) {
   const hasUsers = Array.isArray(db.users) && db.users.length > 0;
@@ -41,8 +60,9 @@ function ensureDefaultUser(db) {
       createdAt: Date.now()
     };
     db.users = [admin];
+    // 只修正没有 userId 的孤儿图片
     if (Array.isArray(db.images)) {
-      db.images = db.images.map((img) => ({ ...img, userId: admin.id }));
+      db.images = db.images.map((img) => img.userId ? img : { ...img, userId: admin.id });
     }
   }
 }
@@ -67,7 +87,7 @@ app.use(
     secret: process.env.SESSION_SECRET || 'nodeimage-clone-secret',
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
+    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, secure: true, sameSite: 'lax' }
   })
 );
 
@@ -80,7 +100,6 @@ const allowedMime = new Set([
   'image/jpg',
   'image/gif',
   'image/webp',
-  'image/svg+xml',
   'image/avif'
 ]);
 
@@ -165,22 +184,6 @@ async function attachUser(req, res, next) {
   next();
 }
 
-function ensureUserRecord(db, username) {
-  let user = db.users.find((u) => u.username === username);
-  if (!user) {
-    user = {
-      id: nanoid(12),
-      username,
-      apiKey: generateApiKey(),
-      level: 1,
-      createdAt: Date.now(),
-      passwordHash: null
-    };
-    db.users.push(user);
-  }
-  return user;
-}
-
 function createWatermarkSvg(text, width = 800) {
   const fontSize = Math.max(16, Math.round(width / 25));
   const padding = Math.round(fontSize * 0.6);
@@ -236,20 +239,20 @@ app.get('/api/user/status', attachUser, async (req, res) => {
   });
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', rateLimit({ windowMs: 60000, max: 10 }), async (req, res) => {
   const username = (req.body.username || '').trim().slice(0, 30);
   const password = req.body.password || '';
   if (!username || !password) return res.status(400).json({ message: '用户名和密码不能为空' });
   const db = await loadDb();
   const user = db.users.find((u) => u.username === username);
-  if (!user) return res.status(401).json({ message: '用户不存在' });
+  if (!user) return res.status(401).json({ message: '用户名或密码错误' });
   // 若旧用户没有密码，则用首次登录的密码初始化
   if (!user.passwordHash) {
     user.passwordHash = await bcrypt.hash(password, 10);
     await saveDb(db);
   } else {
     const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) return res.status(401).json({ message: '密码错误' });
+    if (!ok) return res.status(401).json({ message: '用户名或密码错误' });
   }
   req.session.userId = user.id;
   const isDefault = user.username === 'admin' && password === 'admin';
@@ -449,7 +452,13 @@ app.post('/api/images/delete', requireAuth, async (req, res) => {
 });
 
 app.get('/api/v1/list', requireAuth, async (req, res) => {
-  const items = req.db.images.filter((img) => img.userId === req.user.id).map((img) => ({
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+  const userImages = req.db.images.filter((img) => img.userId === req.user.id);
+  const total = userImages.length;
+  const totalPages = Math.ceil(total / limit);
+  const start = (page - 1) * limit;
+  const items = userImages.slice(start, start + limit).map((img) => ({
     id: img.id,
     url: `${getBaseUrl(req)}/uploads/${img.filename}`,
     thumbUrl: `${getBaseUrl(req)}/uploads/thumbs/${img.thumbName}`,
@@ -458,7 +467,7 @@ app.get('/api/v1/list', requireAuth, async (req, res) => {
     height: img.height,
     createdAt: img.createdAt
   }));
-  res.json({ items });
+  res.json({ items, total, totalPages, currentPage: page });
 });
 
 app.delete('/api/v1/delete/:id', requireAuth, async (req, res) => {
@@ -483,6 +492,37 @@ app.delete('/api/v1/delete/:id', requireAuth, async (req, res) => {
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
+
+// --- 自动删除过期图片 ---
+async function cleanupExpiredImages() {
+  try {
+    const db = await loadDb();
+    const now = Date.now();
+    const remaining = [];
+    let removed = 0;
+    for (const img of db.images) {
+      if (img.autoDelete && img.deleteAfterDays) {
+        const expiresAt = img.createdAt + img.deleteAfterDays * 86400000;
+        if (now >= expiresAt) {
+          await fs.remove(path.join(uploadDir, img.filename)).catch(() => {});
+          if (img.thumbName) await fs.remove(path.join(thumbDir, img.thumbName)).catch(() => {});
+          removed++;
+          continue;
+        }
+      }
+      remaining.push(img);
+    }
+    if (removed > 0) {
+      db.images = remaining;
+      await saveDb(db);
+      console.log(`Auto-delete: removed ${removed} expired image(s)`);
+    }
+  } catch (err) {
+    console.error('Auto-delete cleanup error:', err);
+  }
+}
+// 每小时检查一次
+setInterval(cleanupExpiredImages, 3600000);
 
 app.listen(PORT, () => {
   console.log(`Nodeimage clone running at http://localhost:${PORT}`);
