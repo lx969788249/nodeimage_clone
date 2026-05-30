@@ -10,8 +10,7 @@ RUN apk add --no-cache python3 make g++ \
 # 拷贝应用代码
 COPY public ./public
 COPY server.js ./server.js
-COPY data ./data
-RUN mkdir -p uploads/thumbs
+RUN mkdir -p uploads/thumbs data
 
 ENV PORT=7878
 EXPOSE 7878
