@@ -21,23 +21,28 @@ const PORT = process.env.PORT || 7878;
 const CONFIG_BASE_URL = process.env.BASE_URL ? process.env.BASE_URL.replace(/\/$/, '') : '';
 
 // --- 自动备份配置 ---
-const BACKUP_INTERVAL_MS = (parseInt(process.env.BACKUP_INTERVAL_HOURS) || 24) * 3600000;
-const BACKUP_KEEP_COUNT = parseInt(process.env.BACKUP_KEEP_COUNT) || 7;
-const S3_ENDPOINT = process.env.S3_ENDPOINT || '';
-const S3_REGION = process.env.S3_REGION || 'auto';
-const S3_BUCKET = process.env.S3_BUCKET || '';
-const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || '';
-const S3_SECRET_KEY = process.env.S3_SECRET_KEY || '';
-const BACKUP_WEBHOOK_URL = process.env.BACKUP_WEBHOOK_URL || '';
-
 let s3Client;
-function getS3Client() {
-  if (!S3_ENDPOINT || !S3_BUCKET || !S3_ACCESS_KEY || !S3_SECRET_KEY) return null;
+let _backupTimer = null;
+function clearBackupTimers() {
+  if (_backupTimer) { clearTimeout(_backupTimer); clearInterval(_backupTimer); _backupTimer = null; }
+}
+function startBackupTimers(intervalHours) {
+  clearBackupTimers();
+  const ms = intervalHours * 3600000;
+  _backupTimer = setTimeout(() => {
+    runAutoBackup();
+    _backupTimer = setInterval(runAutoBackup, ms);
+  }, 300000); // 启动后 5 分钟首次执行
+}
+
+async function getS3Client() {
+  const config = await getBackupConfig();
+  if (!config.s3Endpoint || !config.s3Bucket || !config.s3AccessKey || !config.s3SecretKey) return null;
   if (s3Client) return s3Client;
   s3Client = new S3Client({
-    endpoint: S3_ENDPOINT,
-    region: S3_REGION,
-    credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
+    endpoint: config.s3Endpoint,
+    region: config.s3Region,
+    credentials: { accessKeyId: config.s3AccessKey, secretAccessKey: config.s3SecretKey },
     forcePathStyle: true
   });
   return s3Client;
@@ -758,6 +763,106 @@ app.post('/api/user/regenerate-api-key', requireAuth, async (req, res) => {
   res.json({ apiKey: user.apiKey });
 });
 
+// --- 备份设置 ---
+const BACKUP_DEFAULTS = {
+  intervalHours: 24,
+  keepCount: 7,
+  s3Endpoint: '',
+  s3Region: 'auto',
+  s3Bucket: '',
+  s3AccessKey: '',
+  s3SecretKey: '',
+  webhookUrl: ''
+};
+
+async function getBackupConfig() {
+  const db = await getSqlite();
+  const row = await db.get('SELECT value FROM settings WHERE key = ?', 'backup');
+  const saved = row ? JSON.parse(row.value) : {};
+  // 环境变量优先，数据库值作为默认
+  return {
+    intervalHours: parseInt(process.env.BACKUP_INTERVAL_HOURS) || saved.intervalHours || BACKUP_DEFAULTS.intervalHours,
+    keepCount: parseInt(process.env.BACKUP_KEEP_COUNT) || saved.keepCount || BACKUP_DEFAULTS.keepCount,
+    s3Endpoint: process.env.S3_ENDPOINT || saved.s3Endpoint || BACKUP_DEFAULTS.s3Endpoint,
+    s3Region: process.env.S3_REGION || saved.s3Region || BACKUP_DEFAULTS.s3Region,
+    s3Bucket: process.env.S3_BUCKET || saved.s3Bucket || BACKUP_DEFAULTS.s3Bucket,
+    s3AccessKey: process.env.S3_ACCESS_KEY || saved.s3AccessKey || BACKUP_DEFAULTS.s3AccessKey,
+    s3SecretKey: process.env.S3_SECRET_KEY || saved.s3SecretKey || BACKUP_DEFAULTS.s3SecretKey,
+    webhookUrl: process.env.BACKUP_WEBHOOK_URL || saved.webhookUrl || BACKUP_DEFAULTS.webhookUrl
+  };
+}
+
+app.get('/api/settings/backup', requireAuth, requireAdmin, async (req, res) => {
+  const config = await getBackupConfig();
+  // 密钥脱敏
+  config.s3AccessKey = config.s3AccessKey ? '***' + config.s3AccessKey.slice(-4) : '';
+  config.s3SecretKey = config.s3SecretKey ? '***' : '';
+  res.json(config);
+});
+
+app.post('/api/settings/backup', requireAuth, requireAdmin, async (req, res) => {
+  const db = await getSqlite();
+  const current = await getBackupConfig();
+  const updated = {
+    intervalHours: Math.max(1, Math.min(720, Number(req.body.intervalHours) || current.intervalHours)),
+    keepCount: Math.max(1, Math.min(365, Number(req.body.keepCount) || current.keepCount)),
+    s3Endpoint: req.body.s3Endpoint !== undefined ? String(req.body.s3Endpoint).trim() : current.s3Endpoint,
+    s3Region: req.body.s3Region !== undefined ? String(req.body.s3Region).trim() : current.s3Region,
+    s3Bucket: req.body.s3Bucket !== undefined ? String(req.body.s3Bucket).trim() : current.s3Bucket,
+    s3AccessKey: req.body.s3AccessKey !== undefined ? String(req.body.s3AccessKey).trim() : current.s3AccessKey,
+    s3SecretKey: req.body.s3SecretKey !== undefined ? String(req.body.s3SecretKey).trim() : current.s3SecretKey,
+    webhookUrl: req.body.webhookUrl !== undefined ? String(req.body.webhookUrl).trim() : current.webhookUrl
+  };
+  await db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)', 'backup', JSON.stringify(updated));
+  // 重置 S3 连接缓存
+  s3Client = null;
+  // 重置备份定时器
+  clearBackupTimers();
+  startBackupTimers(updated.intervalHours);
+  // 脱敏返回
+  const result = { ...updated };
+  result.s3AccessKey = result.s3AccessKey ? '***' + result.s3AccessKey.slice(-4) : '';
+  result.s3SecretKey = result.s3SecretKey ? '***' : '';
+  res.json({ message: '备份设置已更新', config: result });
+});
+
+// 测试 S3 连接
+app.post('/api/settings/backup/test-s3', requireAuth, requireAdmin, async (req, res) => {
+  const config = await getBackupConfig();
+  if (!config.s3Endpoint || !config.s3Bucket || !config.s3AccessKey || !config.s3SecretKey) {
+    return res.status(400).json({ message: 'S3 配置不完整' });
+  }
+  try {
+    const testClient = new S3Client({
+      endpoint: config.s3Endpoint,
+      region: config.s3Region,
+      credentials: { accessKeyId: config.s3AccessKey, secretAccessKey: config.s3SecretKey },
+      forcePathStyle: true
+    });
+    await testClient.send(new ListObjectsV2Command({ Bucket: config.s3Bucket, MaxKeys: 1 }));
+    res.json({ message: 'S3 连接成功' });
+  } catch (err) {
+    res.status(400).json({ message: 'S3 连接失败', error: err.message });
+  }
+});
+
+// 测试 Webhook
+app.post('/api/settings/backup/test-webhook', requireAuth, requireAdmin, async (req, res) => {
+  const config = await getBackupConfig();
+  if (!config.webhookUrl) return res.status(400).json({ message: 'Webhook URL 未配置' });
+  try {
+    const res2 = await fetch(config.webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', 'X-Backup-Test': 'true' },
+      body: 'nodeimage backup test ping'
+    });
+    if (!res2.ok) throw new Error(`HTTP ${res2.status}`);
+    res.json({ message: 'Webhook 连接成功' });
+  } catch (err) {
+    res.status(400).json({ message: 'Webhook 连接失败', error: err.message });
+  }
+});
+
 // 备份下载（打包 uploads 与数据库）
 app.get('/api/backup', requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -1011,11 +1116,12 @@ app.post('/api/backup/auto', requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.get('/api/backup/status', requireAuth, requireAdmin, async (req, res) => {
+  const config = await getBackupConfig();
   res.json({
-    s3: { configured: !!(S3_ENDPOINT && S3_BUCKET && S3_ACCESS_KEY && S3_SECRET_KEY), endpoint: S3_ENDPOINT || null, bucket: S3_BUCKET || null },
-    webhook: { configured: !!BACKUP_WEBHOOK_URL, url: BACKUP_WEBHOOK_URL || null },
-    intervalHours: BACKUP_INTERVAL_MS / 3600000,
-    keepCount: BACKUP_KEEP_COUNT
+    s3: { configured: !!(config.s3Endpoint && config.s3Bucket && config.s3AccessKey && config.s3SecretKey), endpoint: config.s3Endpoint || null, bucket: config.s3Bucket || null },
+    webhook: { configured: !!config.webhookUrl, url: config.webhookUrl || null },
+    intervalHours: config.intervalHours,
+    keepCount: config.keepCount
   });
 });
 
@@ -1074,13 +1180,14 @@ async function createBackupArchive(stamp) {
 }
 
 async function uploadBackupToS3(filePath, stamp) {
-  const client = getS3Client();
+  const client = await getS3Client();
   if (!client) return { type: 's3', skipped: true, reason: 'S3 未配置' };
+  const config = await getBackupConfig();
   const stream = await fs.createReadStream(filePath);
   const upload = new Upload({
     client,
     params: {
-      Bucket: S3_BUCKET,
+      Bucket: config.s3Bucket,
       Key: `nodeimage/backup-${stamp}.tar.gz`,
       Body: stream,
       ContentType: 'application/gzip'
@@ -1091,9 +1198,10 @@ async function uploadBackupToS3(filePath, stamp) {
 }
 
 async function uploadBackupToWebhook(filePath, stamp) {
-  if (!BACKUP_WEBHOOK_URL) return { type: 'webhook', skipped: true, reason: 'Webhook 未配置' };
+  const config = await getBackupConfig();
+  if (!config.webhookUrl) return { type: 'webhook', skipped: true, reason: 'Webhook 未配置' };
   const content = await fs.readFile(filePath);
-  const res = await fetch(BACKUP_WEBHOOK_URL, {
+  const res = await fetch(config.webhookUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/gzip',
@@ -1107,17 +1215,18 @@ async function uploadBackupToWebhook(filePath, stamp) {
 }
 
 async function rotateS3Backups() {
-  const client = getS3Client();
+  const client = await getS3Client();
   if (!client) return;
+  const config = await getBackupConfig();
   try {
     const list = await client.send(new ListObjectsV2Command({
-      Bucket: S3_BUCKET,
+      Bucket: config.s3Bucket,
       Prefix: 'nodeimage/backup-'
     }));
     const items = (list.Contents || []).sort((a, b) => (b.LastModified || 0) - (a.LastModified || 0));
-    if (items.length <= BACKUP_KEEP_COUNT) return;
-    for (const item of items.slice(BACKUP_KEEP_COUNT)) {
-      await client.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: item.Key }));
+    if (items.length <= config.keepCount) return;
+    for (const item of items.slice(config.keepCount)) {
+      await client.send(new DeleteObjectCommand({ Bucket: config.s3Bucket, Key: item.Key }));
       console.log(`S3 backup deleted: ${item.Key}`);
     }
   } catch (err) {
@@ -1145,12 +1254,13 @@ async function runAutoBackup() {
   }
   // 本地轮转：保留最近 N 个备份
   try {
+    const config = await getBackupConfig();
     const dir = path.join(__dirname, 'data');
     const files = (await fs.readdir(dir))
       .filter((f) => f.startsWith('backup-') && f.endsWith('.tar.gz'))
       .map((f) => ({ name: f, path: path.join(dir, f) }));
     files.sort((a, b) => b.name.localeCompare(a.name));
-    for (const f of files.slice(BACKUP_KEEP_COUNT)) {
+    for (const f of files.slice(config.keepCount)) {
       await fs.remove(f.path);
       console.log(`Local backup deleted: ${f.name}`);
     }
@@ -1159,9 +1269,11 @@ async function runAutoBackup() {
   }
 }
 
-// 定时自动备份（启动后延迟 5 分钟执行第一次）
-setTimeout(runAutoBackup, 300000);
-setInterval(runAutoBackup, BACKUP_INTERVAL_MS);
+// 定时自动备份
+(async () => {
+  const config = await getBackupConfig();
+  startBackupTimers(config.intervalHours);
+})();
 
 app.listen(PORT, () => {
   console.log(`Nodeimage clone running at http://localhost:${PORT}`);

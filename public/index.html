@@ -214,9 +214,47 @@
                   </div>
                   <div class="setting-desc">上传导出的备份包并应用</div>
                 </div>
+                <div class="setting-group">
+                  <h4>自动备份（仅管理员）</h4>
+                  <div class="setting-item">
+                    <div class="setting-label">
+                      <span class="setting-title">备份间隔（小时）</span>
+                      <input type="number" id="backupIntervalHours" value="24" min="1" max="720" class="text-input" style="width:100px;">
+                    </div>
+                  </div>
+                  <div class="setting-item">
+                    <div class="setting-label">
+                      <span class="setting-title">保留备份数量</span>
+                      <input type="number" id="backupKeepCount" value="7" min="1" max="365" class="text-input" style="width:100px;">
+                    </div>
+                  </div>
+                  <div class="setting-item">
+                    <details class="backup-details">
+                      <summary>S3 兼容存储设置</summary>
+                      <div class="setting-label full-input"><span class="setting-title">Endpoint</span><input type="text" id="s3Endpoint" placeholder="https://xxx.r2.cloudflarestorage.com" class="text-input"></div>
+                      <div class="setting-label full-input"><span class="setting-title">Region</span><input type="text" id="s3Region" placeholder="auto" class="text-input"></div>
+                      <div class="setting-label full-input"><span class="setting-title">Bucket</span><input type="text" id="s3Bucket" placeholder="my-backups" class="text-input"></div>
+                      <div class="setting-label full-input"><span class="setting-title">Access Key</span><input type="text" id="s3AccessKey" class="text-input"></div>
+                      <div class="setting-label full-input"><span class="setting-title">Secret Key</span><input type="password" id="s3SecretKey" class="text-input"></div>
+                      <button class="tailwind-btn" id="testS3Btn" style="margin-top:6px;">测试 S3 连接</button>
+                      <span id="testS3Result" style="margin-left:8px;font-size:12px;"></span>
+                    </details>
+                  </div>
+                  <div class="setting-item">
+                    <details class="backup-details">
+                      <summary>Webhook 设置</summary>
+                      <div class="setting-label full-input"><span class="setting-title">Webhook URL</span><input type="text" id="backupWebhookUrl" placeholder="https://your-server.com/upload" class="text-input"></div>
+                      <button class="tailwind-btn" id="testWebhookBtn" style="margin-top:6px;">测试 Webhook</button>
+                      <span id="testWebhookResult" style="margin-left:8px;font-size:12px;"></span>
+                    </details>
+                  </div>
+                  <button class="tailwind-btn" id="triggerBackupBtn" style="margin-top:6px;">立即备份</button>
+                  <span id="backupStatus" style="margin-left:8px;font-size:12px;"></span>
+                </div>
               </div>
               <div style="margin-top:10px;text-align:left;">
-                <button class="tailwind-btn apply-brand-btn" id="applyBrandingBtn">应用设置</button>
+                <button class="tailwind-btn apply-brand-btn" id="saveBackupSettingsBtn">保存备份设置</button>
+                <button class="tailwind-btn apply-brand-btn" id="applyBrandingBtn">应用图床设置</button>
               </div>
             </div>
           </div>

@@ -1302,6 +1302,149 @@ function setupEventListeners() {
   if (els.brandIconInput) els.brandIconInput.addEventListener('input', handleBrandingInput);
   if (els.allowRegisterInput) els.allowRegisterInput.addEventListener('change', handleBrandingInput);
 
+  // --- 备份设置 ---
+  const elsBackup = {
+    saveBtn: document.getElementById('saveBackupSettingsBtn'),
+    intervalHours: document.getElementById('backupIntervalHours'),
+    keepCount: document.getElementById('backupKeepCount'),
+    s3Endpoint: document.getElementById('s3Endpoint'),
+    s3Region: document.getElementById('s3Region'),
+    s3Bucket: document.getElementById('s3Bucket'),
+    s3AccessKey: document.getElementById('s3AccessKey'),
+    s3SecretKey: document.getElementById('s3SecretKey'),
+    webhookUrl: document.getElementById('backupWebhookUrl'),
+    testS3Btn: document.getElementById('testS3Btn'),
+    testS3Result: document.getElementById('testS3Result'),
+    testWebhookBtn: document.getElementById('testWebhookBtn'),
+    testWebhookResult: document.getElementById('testWebhookResult'),
+    triggerBtn: document.getElementById('triggerBackupBtn'),
+    backupStatus: document.getElementById('backupStatus')
+  };
+
+  async function loadBackupSettings() {
+    try {
+      const res = await fetch('/api/settings/backup', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (elsBackup.intervalHours) elsBackup.intervalHours.value = data.intervalHours;
+      if (elsBackup.keepCount) elsBackup.keepCount.value = data.keepCount;
+      if (elsBackup.s3Endpoint) elsBackup.s3Endpoint.value = data.s3Endpoint || '';
+      if (elsBackup.s3Region) elsBackup.s3Region.value = data.s3Region || '';
+      if (elsBackup.s3Bucket) elsBackup.s3Bucket.value = data.s3Bucket || '';
+      if (elsBackup.s3AccessKey) elsBackup.s3AccessKey.value = data.s3AccessKey || '';
+      if (elsBackup.webhookUrl) elsBackup.webhookUrl.value = data.webhookUrl || '';
+      // s3SecretKey is masked by server, don't overwrite if user is editing
+    } catch (err) {
+      console.error('loadBackupSettings', err);
+    }
+  }
+
+  async function saveBackupSettings() {
+    const payload = {
+      intervalHours: Number(elsBackup.intervalHours?.value) || 24,
+      keepCount: Number(elsBackup.keepCount?.value) || 7,
+      s3Endpoint: elsBackup.s3Endpoint?.value || '',
+      s3Region: elsBackup.s3Region?.value || 'auto',
+      s3Bucket: elsBackup.s3Bucket?.value || '',
+      s3AccessKey: elsBackup.s3AccessKey?.value || '',
+      s3SecretKey: elsBackup.s3SecretKey?.value || '',
+      webhookUrl: elsBackup.webhookUrl?.value || ''
+    };
+    try {
+      const res = await fetch('/api/settings/backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        credentials: 'include'
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.message || '保存失败');
+      // 密钥字段不回传完整值，清空输入框避免混淆
+      if (elsBackup.s3SecretKey) elsBackup.s3SecretKey.value = '';
+      showNotification(data.message || '备份设置已保存', 'success');
+      await loadBackupSettings();
+    } catch (err) {
+      showNotification(err.message, 'error');
+    }
+  }
+
+  async function testS3() {
+    if (elsBackup.testS3Result) elsBackup.testS3Result.textContent = '测试中...';
+    try {
+      // 先保存当前 S3 配置
+      await fetch('/api/settings/backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          s3Endpoint: elsBackup.s3Endpoint?.value || '',
+          s3Region: elsBackup.s3Region?.value || 'auto',
+          s3Bucket: elsBackup.s3Bucket?.value || '',
+          s3AccessKey: elsBackup.s3AccessKey?.value || '',
+          s3SecretKey: elsBackup.s3SecretKey?.value || ''
+        }),
+        credentials: 'include'
+      });
+      const res = await fetch('/api/settings/backup/test-s3', { method: 'POST', credentials: 'include' });
+      const data = await res.json();
+      if (res.ok) {
+        if (elsBackup.testS3Result) { elsBackup.testS3Result.textContent = '✅ ' + data.message; elsBackup.testS3Result.style.color = 'green'; }
+      } else {
+        if (elsBackup.testS3Result) { elsBackup.testS3Result.textContent = '❌ ' + data.message; elsBackup.testS3Result.style.color = 'red'; }
+      }
+    } catch (err) {
+      if (elsBackup.testS3Result) { elsBackup.testS3Result.textContent = '❌ 请求失败'; elsBackup.testS3Result.style.color = 'red'; }
+    }
+  }
+
+  async function testWebhook() {
+    if (elsBackup.testWebhookResult) elsBackup.testWebhookResult.textContent = '测试中...';
+    try {
+      await fetch('/api/settings/backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webhookUrl: elsBackup.webhookUrl?.value || '' }),
+        credentials: 'include'
+      });
+      const res = await fetch('/api/settings/backup/test-webhook', { method: 'POST', credentials: 'include' });
+      const data = await res.json();
+      if (res.ok) {
+        if (elsBackup.testWebhookResult) { elsBackup.testWebhookResult.textContent = '✅ ' + data.message; elsBackup.testWebhookResult.style.color = 'green'; }
+      } else {
+        if (elsBackup.testWebhookResult) { elsBackup.testWebhookResult.textContent = '❌ ' + data.message; elsBackup.testWebhookResult.style.color = 'red'; }
+      }
+    } catch (err) {
+      if (elsBackup.testWebhookResult) { elsBackup.testWebhookResult.textContent = '❌ 请求失败'; elsBackup.testWebhookResult.style.color = 'red'; }
+    }
+  }
+
+  async function triggerBackup() {
+    if (elsBackup.backupStatus) elsBackup.backupStatus.textContent = '备份中...';
+    try {
+      const res = await fetch('/api/backup/auto', { method: 'POST', credentials: 'include' });
+      const data = await res.json();
+      if (res.ok) {
+        if (elsBackup.backupStatus) { elsBackup.backupStatus.textContent = '✅ ' + data.message; elsBackup.backupStatus.style.color = 'green'; }
+      } else {
+        if (elsBackup.backupStatus) { elsBackup.backupStatus.textContent = '❌ ' + (data.message || '失败'); elsBackup.backupStatus.style.color = 'red'; }
+      }
+    } catch (err) {
+      if (elsBackup.backupStatus) { elsBackup.backupStatus.textContent = '❌ 请求失败'; elsBackup.backupStatus.style.color = 'red'; }
+    }
+  }
+
+  if (elsBackup.saveBtn) elsBackup.saveBtn.addEventListener('click', saveBackupSettings);
+  if (elsBackup.testS3Btn) elsBackup.testS3Btn.addEventListener('click', testS3);
+  if (elsBackup.testWebhookBtn) elsBackup.testWebhookBtn.addEventListener('click', testWebhook);
+  if (elsBackup.triggerBtn) elsBackup.triggerBtn.addEventListener('click', triggerBackup);
+
+  // 打开管理面板时加载备份设置
+  const origAdminPanelBtn = document.getElementById('adminPanelBtn');
+  if (origAdminPanelBtn) {
+    origAdminPanelBtn.addEventListener('click', () => {
+      setTimeout(loadBackupSettings, 300);
+    });
+  }
+
   bindModalInteractions();
 }
 
