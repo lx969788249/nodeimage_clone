@@ -11,12 +11,38 @@ import bcrypt from 'bcryptjs';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { spawn } from 'child_process';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 
 const __dirname = process.cwd();
 const app = express();
 
 const PORT = process.env.PORT || 7878;
 const CONFIG_BASE_URL = process.env.BASE_URL ? process.env.BASE_URL.replace(/\/$/, '') : '';
+
+// --- 自动备份配置 ---
+const BACKUP_INTERVAL_MS = (parseInt(process.env.BACKUP_INTERVAL_HOURS) || 24) * 3600000;
+const BACKUP_KEEP_COUNT = parseInt(process.env.BACKUP_KEEP_COUNT) || 7;
+const S3_ENDPOINT = process.env.S3_ENDPOINT || '';
+const S3_REGION = process.env.S3_REGION || 'auto';
+const S3_BUCKET = process.env.S3_BUCKET || '';
+const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY || '';
+const S3_SECRET_KEY = process.env.S3_SECRET_KEY || '';
+const BACKUP_WEBHOOK_URL = process.env.BACKUP_WEBHOOK_URL || '';
+
+let s3Client;
+function getS3Client() {
+  if (!S3_ENDPOINT || !S3_BUCKET || !S3_ACCESS_KEY || !S3_SECRET_KEY) return null;
+  if (s3Client) return s3Client;
+  s3Client = new S3Client({
+    endpoint: S3_ENDPOINT,
+    region: S3_REGION,
+    credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
+    forcePathStyle: true
+  });
+  return s3Client;
+}
+
 const uploadDir = path.join(__dirname, 'uploads');
 const dataFile = path.join(__dirname, 'data', 'db.sqlite');
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
@@ -974,6 +1000,25 @@ app.delete('/api/v1/delete/:id', requireAuth, async (req, res) => {
   res.json({ message: '删除成功' });
 });
 
+// --- 备份 API ---
+app.post('/api/backup/auto', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await runAutoBackup();
+    res.json({ message: '备份完成' });
+  } catch (err) {
+    res.status(500).json({ message: '备份失败', error: err.message });
+  }
+});
+
+app.get('/api/backup/status', requireAuth, requireAdmin, async (req, res) => {
+  res.json({
+    s3: { configured: !!(S3_ENDPOINT && S3_BUCKET && S3_ACCESS_KEY && S3_SECRET_KEY), endpoint: S3_ENDPOINT || null, bucket: S3_BUCKET || null },
+    webhook: { configured: !!BACKUP_WEBHOOK_URL, url: BACKUP_WEBHOOK_URL || null },
+    intervalHours: BACKUP_INTERVAL_MS / 3600000,
+    keepCount: BACKUP_KEEP_COUNT
+  });
+});
+
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -1002,6 +1047,121 @@ async function cleanupExpiredImages() {
   }
 }
 setInterval(cleanupExpiredImages, 3600000);
+
+// --- 自动备份：S3 与 Webhook ---
+function backupStamp() {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}-${d.getTime()}`;
+}
+
+function backupArchivePath(stamp) {
+  return path.join(__dirname, 'data', `backup-${stamp}.tar.gz`);
+}
+
+async function createBackupArchive(stamp) {
+  const outPath = backupArchivePath(stamp);
+  await fs.ensureDir(path.dirname(outPath));
+  const files = [];
+  if (await fs.pathExists(dataFile)) files.push(path.relative(__dirname, dataFile));
+  if (await fs.pathExists(uploadDir)) files.push(path.relative(__dirname, uploadDir));
+  if (!files.length) throw new Error('没有可备份的文件');
+  await new Promise((resolve, reject) => {
+    const tar = spawn('tar', ['-czf', outPath, ...files], { cwd: __dirname });
+    tar.on('close', (code) => (code === 0 ? resolve() : reject(new Error('打包失败'))));
+    tar.on('error', reject);
+  });
+  return outPath;
+}
+
+async function uploadBackupToS3(filePath, stamp) {
+  const client = getS3Client();
+  if (!client) return { type: 's3', skipped: true, reason: 'S3 未配置' };
+  const stream = await fs.createReadStream(filePath);
+  const upload = new Upload({
+    client,
+    params: {
+      Bucket: S3_BUCKET,
+      Key: `nodeimage/backup-${stamp}.tar.gz`,
+      Body: stream,
+      ContentType: 'application/gzip'
+    }
+  });
+  await upload.done();
+  return { type: 's3', success: true };
+}
+
+async function uploadBackupToWebhook(filePath, stamp) {
+  if (!BACKUP_WEBHOOK_URL) return { type: 'webhook', skipped: true, reason: 'Webhook 未配置' };
+  const content = await fs.readFile(filePath);
+  const res = await fetch(BACKUP_WEBHOOK_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/gzip',
+      'X-Backup-Filename': `nodeimage-backup-${stamp}.tar.gz`,
+      'X-Backup-Timestamp': stamp
+    },
+    body: content
+  });
+  if (!res.ok) throw new Error(`Webhook 返回 ${res.status}`);
+  return { type: 'webhook', success: true };
+}
+
+async function rotateS3Backups() {
+  const client = getS3Client();
+  if (!client) return;
+  try {
+    const list = await client.send(new ListObjectsV2Command({
+      Bucket: S3_BUCKET,
+      Prefix: 'nodeimage/backup-'
+    }));
+    const items = (list.Contents || []).sort((a, b) => (b.LastModified || 0) - (a.LastModified || 0));
+    if (items.length <= BACKUP_KEEP_COUNT) return;
+    for (const item of items.slice(BACKUP_KEEP_COUNT)) {
+      await client.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: item.Key }));
+      console.log(`S3 backup deleted: ${item.Key}`);
+    }
+  } catch (err) {
+    console.error('S3 rotate error:', err.message);
+  }
+}
+
+async function runAutoBackup() {
+  console.log('Auto-backup starting...');
+  const stamp = backupStamp();
+  let filePath;
+  try {
+    filePath = await createBackupArchive(stamp);
+    const [s3Result, webhookResult] = await Promise.allSettled([
+      uploadBackupToS3(filePath, stamp),
+      uploadBackupToWebhook(filePath, stamp)
+    ]);
+    if (s3Result.status === 'fulfilled') console.log('Backup S3:', JSON.stringify(s3Result.value));
+    else console.error('Backup S3 failed:', s3Result.reason?.message);
+    if (webhookResult.status === 'fulfilled') console.log('Backup Webhook:', JSON.stringify(webhookResult.value));
+    else console.error('Backup Webhook failed:', webhookResult.reason?.message);
+    await rotateS3Backups();
+  } catch (err) {
+    console.error('Auto-backup failed:', err.message);
+  }
+  // 本地轮转：保留最近 N 个备份
+  try {
+    const dir = path.join(__dirname, 'data');
+    const files = (await fs.readdir(dir))
+      .filter((f) => f.startsWith('backup-') && f.endsWith('.tar.gz'))
+      .map((f) => ({ name: f, path: path.join(dir, f) }));
+    files.sort((a, b) => b.name.localeCompare(a.name));
+    for (const f of files.slice(BACKUP_KEEP_COUNT)) {
+      await fs.remove(f.path);
+      console.log(`Local backup deleted: ${f.name}`);
+    }
+  } catch (err) {
+    console.error('Local backup rotate error:', err.message);
+  }
+}
+
+// 定时自动备份（启动后延迟 5 分钟执行第一次）
+setTimeout(runAutoBackup, 300000);
+setInterval(runAutoBackup, BACKUP_INTERVAL_MS);
 
 app.listen(PORT, () => {
   console.log(`Nodeimage clone running at http://localhost:${PORT}`);
