@@ -8,11 +8,20 @@ import fs from 'fs-extra';
 import path from 'path';
 import mime from 'mime-types';
 import bcrypt from 'bcryptjs';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
+import { spawn } from 'child_process';
 
 const __dirname = process.cwd();
 const app = express();
 
 const PORT = process.env.PORT || 7878;
+const CONFIG_BASE_URL = process.env.BASE_URL ? process.env.BASE_URL.replace(/\/$/, '') : '';
+const uploadDir = path.join(__dirname, 'uploads');
+const dataFile = path.join(__dirname, 'data', 'db.sqlite');
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+const DAILY_UPLOAD_LIMIT = 200;
+const MAX_CONCURRENT_UPLOADS = 3;
 
 // --- 简易频率限制 ---
 const rateLimitMap = new Map();
@@ -22,15 +31,12 @@ function rateLimit({ windowMs = 60000, max = 10 }) {
     const now = Date.now();
     if (!rateLimitMap.has(key)) rateLimitMap.set(key, []);
     const entries = rateLimitMap.get(key).filter((t) => now - t < windowMs);
-    if (entries.length >= max) {
-      return res.status(429).json({ message: '请求过于频繁，请稍后再试' });
-    }
+    if (entries.length >= max) return res.status(429).json({ message: '请求过于频繁，请稍后再试' });
     entries.push(now);
     rateLimitMap.set(key, entries);
     next();
   };
 }
-// 每5分钟清理一次过期记录
 setInterval(() => {
   const now = Date.now();
   for (const [key, entries] of rateLimitMap) {
@@ -39,36 +45,34 @@ setInterval(() => {
     else rateLimitMap.delete(key);
   }
 }, 300000);
-const CONFIG_BASE_URL = process.env.BASE_URL ? process.env.BASE_URL.replace(/\/$/, '') : '';
-const uploadDir = path.join(__dirname, 'uploads');
-const thumbDir = path.join(uploadDir, 'thumbs');
-const dataFile = path.join(__dirname, 'data', 'db.json');
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
-const DAILY_UPLOAD_LIMIT = 200;
 
-function ensureDefaultUser(db) {
-  const hasUsers = Array.isArray(db.users) && db.users.length > 0;
-  const existingAdmin = hasUsers ? db.users.find((u) => u.id === 'admin') : null;
-  if (!hasUsers || !existingAdmin) {
-    const passwordHash = bcrypt.hashSync('admin', 10);
-    const admin = {
-      id: 'admin',
-      username: 'admin',
-      passwordHash,
-      apiKey: generateApiKey(),
-      level: 1,
-      createdAt: Date.now()
+// --- 并发控制 ---
+let activeUploads = 0;
+const uploadQueue = [];
+function enqueueUpload(fn) {
+  return new Promise((resolve, reject) => {
+    const run = async () => {
+      activeUploads++;
+      try { resolve(await fn()); }
+      catch (err) { reject(err); }
+      finally {
+        activeUploads--;
+        if (uploadQueue.length > 0) uploadQueue.shift()();
+      }
     };
-    db.users = [admin];
-    // 只修正没有 userId 的孤儿图片
-    if (Array.isArray(db.images)) {
-      db.images = db.images.map((img) => img.userId ? img : { ...img, userId: admin.id });
-    }
-  }
+    if (activeUploads < MAX_CONCURRENT_UPLOADS) run();
+    else uploadQueue.push(run);
+  });
+}
+
+function parseBool(val, defaultVal = true) {
+  if (val === undefined || val === null) return defaultVal;
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') return val.toLowerCase() === 'true';
+  return Boolean(val);
 }
 
 await fs.ensureDir(uploadDir);
-await fs.ensureDir(thumbDir);
 await fs.ensureDir(path.dirname(dataFile));
 
 const upload = multer({
@@ -87,9 +91,30 @@ app.use(
     secret: process.env.SESSION_SECRET || 'nodeimage-clone-secret',
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, secure: true, sameSite: 'lax' }
+    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' }
   })
 );
+
+// 兼容旧链接：尝试从数据库找到新的子目录路径并重定向
+app.get('/uploads/:file', async (req, res, next) => {
+  const file = req.params.file;
+  if (!file || file.includes('/')) return next();
+  try {
+    const db = await getSqlite();
+    // 优先匹配缩略图，再匹配原图
+    const thumbRow = await db.get('SELECT thumbName FROM images WHERE thumbName LIKE ?', `%/${file}`);
+    if (thumbRow?.thumbName) {
+      return res.redirect(`/uploads/${thumbRow.thumbName}`);
+    }
+    const imgRow = await db.get('SELECT filename FROM images WHERE filename LIKE ?', `%/${file}`);
+    if (imgRow?.filename) {
+      return res.redirect(`/uploads/${imgRow.filename}`);
+    }
+  } catch (err) {
+    console.error('兼容旧链接查询失败', err.message);
+  }
+  return next();
+});
 
 app.use('/uploads', express.static(uploadDir));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -103,44 +128,312 @@ const allowedMime = new Set([
   'image/avif'
 ]);
 
-async function loadDb() {
-  if (!(await fs.pathExists(dataFile))) {
-    const initial = {
-      users: [],
-      images: [],
-      settings: {
-        branding: {
-          name: 'Nodeimage',
-          subtitle: 'NodeSeek专用图床·克隆版',
-          icon: '',
-          footer: 'Nodeimage 克隆版 · 本地演示'
-        }
-      }
-    };
-    ensureDefaultUser(initial);
-    await fs.writeJSON(dataFile, initial, { spaces: 2 });
-    return initial;
+let sqliteDb;
+async function getSqlite() {
+  if (sqliteDb) return sqliteDb;
+  await fs.ensureDir(path.dirname(dataFile));
+  sqliteDb = await open({
+    filename: dataFile,
+    driver: sqlite3.Database
+  });
+  await sqliteDb.exec(`
+    PRAGMA journal_mode=WAL;
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE,
+      passwordHash TEXT,
+      apiKey TEXT,
+      level INTEGER,
+      sessionVersion INTEGER DEFAULT 1,
+      createdAt INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS images (
+      id TEXT PRIMARY KEY,
+      userId TEXT,
+      filename TEXT,
+      thumbName TEXT,
+      mime TEXT,
+      size INTEGER,
+      width INTEGER,
+      height INTEGER,
+      createdAt INTEGER,
+      autoDelete INTEGER,
+      deleteAfterDays INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
+  // 补齐缺失的 sessionVersion 列（历史数据库）
+  const cols = await sqliteDb.all(`PRAGMA table_info(users)`);
+  const hasSessionVersion = cols.some((c) => c.name === 'sessionVersion');
+  if (!hasSessionVersion) {
+    await sqliteDb.exec(`ALTER TABLE users ADD COLUMN sessionVersion INTEGER DEFAULT 1`);
   }
-  const db = await fs.readJSON(dataFile);
-  ensureDefaultUser(db);
-  await saveDb(db);
-  return db;
+  return sqliteDb;
 }
 
-async function saveDb(db) {
-  await fs.writeJSON(dataFile, db, { spaces: 2 });
+async function resetSqlite() {
+  if (sqliteDb) {
+    try {
+      await sqliteDb.close();
+    } catch (e) {
+      console.warn('关闭数据库连接时出错', e.message);
+    }
+  }
+  sqliteDb = null;
+}
+
+async function ensureDefaultUserSql() {
+  const db = await getSqlite();
+  const admin = await db.get('SELECT * FROM users WHERE id = ?', 'admin');
+  if (!admin) {
+    const passwordHash = bcrypt.hashSync('admin', 10);
+    await db.run(
+      'INSERT INTO users (id, username, passwordHash, apiKey, level, sessionVersion, createdAt) VALUES (?,?,?,?,?,?,?)',
+      'admin',
+      'admin',
+      passwordHash,
+      generateApiKey(),
+      1,
+      1,
+      Date.now()
+    );
+  }
+}
+
+async function loadDb() {
+  const db = await getSqlite();
+  await ensureDefaultUserSql();
+  const users = await db.all('SELECT * FROM users');
+  const images = await db.all('SELECT * FROM images ORDER BY createdAt DESC');
+  const settingsRow = await db.get('SELECT value FROM settings WHERE key = ?', 'branding');
+  const branding = settingsRow ? JSON.parse(settingsRow.value) : {
+    name: 'Nodeimage',
+    subtitle: 'NodeSeek专用图床·克隆版',
+    icon: '',
+    footer: 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
+    registrationEnabled: false
+  };
+  const data = { users, images, settings: { branding } };
+
+  // 迁移旧文件：若文件未包含子目录，则移动到当前年月目录
+  const now = new Date();
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  let migrated = false;
+  for (const img of data.images) {
+    if (img.filename && !img.filename.includes('/')) {
+      const newRel = `${year}/${month}/${img.filename}`;
+      const newDir = path.join(uploadDir, year, month);
+      await fs.ensureDir(newDir);
+      try {
+        const oldPath = path.join(uploadDir, img.filename);
+        const newPath = path.join(uploadDir, newRel);
+        if (await fs.pathExists(oldPath)) {
+          await fs.move(oldPath, newPath, { overwrite: true });
+          img.filename = newRel;
+          migrated = true;
+        }
+      } catch (err) {
+        console.error('迁移图片失败', err.message);
+      }
+      if (img.thumbName && !img.thumbName.includes('/')) {
+        const newThumbRel = `${year}/${month}/${img.thumbName}`;
+        const oldThumb = path.join(uploadDir, 'thumbs', img.thumbName);
+        const newThumb = path.join(uploadDir, newThumbRel);
+        try {
+          if (await fs.pathExists(oldThumb)) {
+            await fs.move(oldThumb, newThumb, { overwrite: true });
+            img.thumbName = newThumbRel;
+            migrated = true;
+          }
+        } catch (err) {
+          console.error('迁移缩略图失败', err.message);
+        }
+      }
+    }
+  }
+  if (migrated) {
+    await saveDb(data);
+  }
+  return data;
+}
+
+async function saveDb(data) {
+  const db = await getSqlite();
+  const txn = await db.exec('BEGIN');
+  try {
+    await db.run('DELETE FROM users');
+    const userStmt = await db.prepare('INSERT INTO users (id, username, passwordHash, apiKey, level, sessionVersion, createdAt) VALUES (?,?,?,?,?,?,?)');
+    for (const u of data.users) {
+      await userStmt.run(
+        u.id,
+        u.username,
+        u.passwordHash || null,
+        u.apiKey,
+        u.level || 1,
+        u.sessionVersion || 1,
+        u.createdAt || Date.now()
+      );
+    }
+    await userStmt.finalize();
+
+  await db.run('DELETE FROM images');
+  const imgStmt = await db.prepare('INSERT INTO images (id, userId, filename, thumbName, mime, size, width, height, createdAt, autoDelete, deleteAfterDays) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+  for (const img of data.images) {
+    await imgStmt.run(
+      img.id,
+      img.userId,
+      img.filename,
+      img.thumbName || null,
+      img.mime || '',
+      img.size || 0,
+      img.width || null,
+      img.height || null,
+      img.createdAt || Date.now(),
+      img.autoDelete ? 1 : 0,
+      img.deleteAfterDays || null
+    );
+  }
+  await imgStmt.finalize();
+
+    await db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)', 'branding', JSON.stringify(data.settings?.branding || {}));
+    await db.exec('COMMIT');
+  } catch (err) {
+    await db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 function getBaseUrl(req) {
   if (CONFIG_BASE_URL) return CONFIG_BASE_URL;
-  const xfProto = req.get('x-forwarded-proto');
-  const protocol = (xfProto || req.protocol || 'http').split(',')[0].trim();
-  const host = req.get('x-forwarded-host') || req.get('host');
+  const xfProto = req.get('x-forwarded-proto') || req.get('x-forwarded-scheme');
+  let protocol = (xfProto || (req.secure ? 'https' : req.protocol) || 'http').split(',')[0].trim();
+  // 如果 Referer/Origin 是 https，则优先用 https，避免反代未带 proto 头时出现 http 链接
+  const ref = req.get('referer') || req.get('origin') || '';
+  if (ref.startsWith('https://')) protocol = 'https';
+  if (req.get('front-end-https') === 'on') protocol = 'https';
+  const xfHost = req.get('x-forwarded-host');
+  const hostHeader = req.get('host');
+  const host = (xfHost || hostHeader || '').split(',')[0].trim();
   return `${protocol}://${host}`;
 }
 
 function generateApiKey() {
   return nanoid(48);
+}
+
+async function rebuildImagesFromUploads(db, ownerId = 'admin') {
+  const images = [];
+  const seen = new Set();
+  async function walk(dirRel) {
+    const dirPath = path.join(uploadDir, dirRel);
+    const entries = await fs.readdir(dirPath);
+    for (const entry of entries) {
+      const rel = dirRel ? path.join(dirRel, entry) : entry;
+      const full = path.join(uploadDir, rel);
+      const stat = await fs.stat(full);
+      if (stat.isDirectory()) {
+        await walk(rel);
+      } else {
+        // 跳过缩略图，由原图去关联
+        if (entry.endsWith('_thumb.webp')) continue;
+        const id = path.parse(entry).name;
+        const thumbRel = rel.replace(/\.[^/.]+$/, '_thumb.webp');
+        const thumbExists = await fs.pathExists(path.join(uploadDir, thumbRel));
+        images.push({
+          id,
+          userId: ownerId || 'admin',
+          filename: rel,
+          thumbName: thumbExists ? thumbRel : null,
+          mime: mime.lookup(entry) || 'application/octet-stream',
+          size: stat.size,
+          width: null,
+          height: null,
+          createdAt: stat.mtimeMs,
+          autoDelete: 0,
+          deleteAfterDays: null
+        });
+        seen.add(rel);
+      }
+    }
+  }
+  await walk('');
+  db.images = images.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function collectUploadFiles() {
+  const files = [];
+  async function walk(dirRel) {
+    const dirPath = path.join(uploadDir, dirRel);
+    const entries = await fs.readdir(dirPath);
+    for (const entry of entries) {
+      const rel = dirRel ? path.join(dirRel, entry) : entry;
+      const full = path.join(uploadDir, rel);
+      const stat = await fs.stat(full);
+      if (stat.isDirectory()) {
+        await walk(rel);
+      } else {
+        if (entry.endsWith('_thumb.webp')) continue;
+        const thumbRel = rel.replace(/\.[^/.]+$/, '_thumb.webp');
+        const thumbExists = await fs.pathExists(path.join(uploadDir, thumbRel));
+        files.push({
+          rel,
+          thumbRel: thumbExists ? thumbRel : null,
+          size: stat.size,
+          createdAt: stat.mtimeMs,
+          mime: mime.lookup(entry) || 'application/octet-stream'
+        });
+      }
+    }
+  }
+  await walk('');
+  return files;
+}
+
+async function reconcileImages(db) {
+  const uploads = await collectUploadFiles();
+  const existsMap = new Map();
+  db.images.forEach((img) => existsMap.set(img.filename, img));
+  let changed = false;
+
+  // 保留存在文件的记录
+  const kept = [];
+  for (const img of db.images) {
+    const exists = await fs.pathExists(path.join(uploadDir, img.filename));
+    if (exists) {
+      kept.push(img);
+    } else {
+      changed = true;
+    }
+  }
+
+  // 补全缺失记录
+  for (const f of uploads) {
+    if (existsMap.has(f.rel)) continue;
+    kept.push({
+      id: path.parse(f.rel).name,
+      userId: 'admin',
+      filename: f.rel,
+      thumbName: f.thumbRel,
+      mime: f.mime,
+      size: f.size,
+      width: null,
+      height: null,
+      createdAt: f.createdAt,
+      autoDelete: 0,
+      deleteAfterDays: null
+    });
+    changed = true;
+  }
+
+  if (changed) {
+    kept.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    db.images = kept;
+    await saveDb(db);
+  }
 }
 
 function getTodayRange() {
@@ -172,6 +465,12 @@ async function requireAuth(req, res, next) {
   req.db = db;
   if (!user) {
     return res.status(401).json({ message: 'AUTH_REQUIRED' });
+  }
+  // 会话版本校验：当用户改密或管理员修改账号后，使旧会话失效
+  const sessionVersion = req.session?.sessionVersion || 1;
+  if ((user.sessionVersion || 1) !== sessionVersion) {
+    req.session.destroy(() => {});
+    return res.status(401).json({ message: 'AUTH_EXPIRED' });
   }
   req.user = user;
   next();
@@ -231,6 +530,7 @@ app.get('/api/user/status', attachUser, async (req, res) => {
   const todayUploads = db.images.filter((img) => img.userId === user.id && img.createdAt >= start && img.createdAt <= end).length;
   res.json({
     authenticated: true,
+    id: user.id,
     username: user.username,
     level: user.level,
     dailyUploads: todayUploads,
@@ -255,6 +555,7 @@ app.post('/api/auth/login', rateLimit({ windowMs: 60000, max: 10 }), async (req,
     if (!ok) return res.status(401).json({ message: '用户名或密码错误' });
   }
   req.session.userId = user.id;
+  req.session.sessionVersion = user.sessionVersion || 1;
   const isDefault = user.username === 'admin' && password === 'admin';
   res.json({ message: '登录成功', user: { username: user.username, level: user.level }, defaultCreds: isDefault });
 });
@@ -263,6 +564,105 @@ app.post('/api/auth/logout', async (req, res) => {
   req.session.destroy(() => {
     res.json({ message: '已注销' });
   });
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  const username = (req.body.username || '').trim().slice(0, 30);
+  const password = req.body.password || '';
+  if (!username || !password) return res.status(400).json({ message: '用户名和密码不能为空' });
+  const db = await loadDb();
+  const allow = db.settings?.branding?.registrationEnabled;
+  if (!allow) return res.status(403).json({ message: '注册已关闭' });
+  const exists = db.users.find((u) => u.username === username);
+  if (exists) return res.status(400).json({ message: '用户名已存在' });
+  try {
+    const user = {
+      id: nanoid(12),
+      username,
+      passwordHash: await bcrypt.hash(password, 10),
+      apiKey: generateApiKey(),
+      level: 1,
+      sessionVersion: 1,
+      createdAt: Date.now()
+    };
+    db.users.push(user);
+    await saveDb(db);
+    req.session.userId = user.id;
+    req.session.sessionVersion = user.sessionVersion;
+    res.json({ message: '注册成功', user: { username: user.username, level: user.level } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: '注册失败，请稍后再试' });
+  }
+});
+
+// 管理员用户管理
+function requireAdmin(req, res, next) {
+  if (req.user && (req.user.id === 'admin' || req.user.level >= 9)) return next();
+  return res.status(403).json({ message: '仅管理员可操作' });
+}
+
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  const db = await loadDb();
+  res.json({
+    users: db.users.map((u) => ({
+      id: u.id,
+      username: u.username,
+      level: u.level || 1,
+      createdAt: u.createdAt
+    }))
+  });
+});
+
+app.post('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  const db = await loadDb();
+  const target = db.users.find((u) => u.id === req.params.id);
+  if (!target) return res.status(404).json({ message: '用户不存在' });
+  const nextName = (req.body.username || '').trim();
+  if (!nextName) return res.status(400).json({ message: '用户名不能为空' });
+  const dup = db.users.find((u) => u.username === nextName && u.id !== target.id);
+  if (dup) return res.status(400).json({ message: '用户名已存在' });
+  let bumped = false;
+  if (target.username !== nextName.slice(0, 30)) {
+    target.username = nextName.slice(0, 30);
+    bumped = true;
+  }
+  if (req.body.password) {
+    target.passwordHash = await bcrypt.hash(req.body.password, 10);
+    bumped = true;
+  }
+  if (bumped) {
+    target.sessionVersion = (target.sessionVersion || 1) + 1;
+  }
+  await saveDb(db);
+  res.json({ message: '已更新用户' });
+});
+
+app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  const id = req.params.id;
+  if (id === 'admin') return res.status(400).json({ message: '不可删除管理员' });
+  const db = await loadDb();
+  const targetUser = db.users.find((u) => u.id === id);
+  if (!targetUser) return res.status(404).json({ message: '用户不存在' });
+
+  // 删除该用户的图片及文件
+  const keepImages = [];
+  for (const img of db.images) {
+    if (img.userId === id) {
+      try {
+        await fs.remove(path.join(uploadDir, img.filename));
+        if (img.thumbName) await fs.remove(path.join(uploadDir, img.thumbName));
+      } catch (err) {
+        console.error('删除文件失败', err.message);
+      }
+    } else {
+      keepImages.push(img);
+    }
+  }
+  db.images = keepImages;
+  db.users = db.users.filter((u) => u.id !== id);
+  await saveDb(db);
+  res.json({ message: '已删除用户' });
 });
 
 async function handleCredentialUpdate(req, res) {
@@ -276,9 +676,13 @@ async function handleCredentialUpdate(req, res) {
   if (!user) return res.status(404).json({ message: '用户不存在' });
   const ok = user.passwordHash ? await bcrypt.compare(oldPassword, user.passwordHash) : false;
   if (!ok) return res.status(401).json({ message: '原密码错误' });
+   // 用户名重名校验
+  const dup = db.users.find((u) => u.username === nextUsername && u.id !== user.id);
+  if (dup) return res.status(400).json({ message: '用户名已存在' });
 
   user.username = nextUsername.slice(0, 30);
   user.passwordHash = await bcrypt.hash(newPassword, 10);
+  user.sessionVersion = (user.sessionVersion || 1) + 1;
   await saveDb(db);
   req.session.destroy(() => {});
   res.json({ message: '账号密码已更新，请重新登录', username: user.username });
@@ -298,18 +702,22 @@ app.get('/api/settings/branding', async (req, res) => {
     name: branding.name || 'Nodeimage',
     subtitle: branding.subtitle || 'NodeSeek专用图床·克隆版',
     icon: branding.icon || '',
-    footer: branding.footer || 'Nodeimage 克隆版 · 本地演示'
+    footer: branding.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
+    registrationEnabled: !!branding.registrationEnabled
   });
 });
 
 app.post('/api/settings/branding', requireAuth, async (req, res) => {
   const db = await loadDb();
+  // 仅 admin 允许修改图床设置
+  if (!(req.user?.id === 'admin' || req.user?.level >= 9)) return res.status(403).json({ message: '仅管理员可修改设置' });
   db.settings = db.settings || {};
   db.settings.branding = {
     name: req.body.name || 'Nodeimage',
     subtitle: req.body.subtitle || 'NodeSeek专用图床·克隆版',
     icon: req.body.icon || '',
-    footer: req.body.footer || 'Nodeimage 克隆版 · 本地演示'
+    footer: req.body.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
+    registrationEnabled: parseBool(req.body.registrationEnabled, false)
   };
   await saveDb(db);
   res.json({ message: '已更新图床设置', branding: db.settings.branding });
@@ -322,6 +730,64 @@ app.post('/api/user/regenerate-api-key', requireAuth, async (req, res) => {
   user.apiKey = generateApiKey();
   await saveDb(db);
   res.json({ apiKey: user.apiKey });
+});
+
+// 备份下载（打包 uploads 与数据库）
+app.get('/api/backup', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const files = [];
+    if (await fs.pathExists(dataFile)) files.push('data/db.sqlite');
+    if (await fs.pathExists(uploadDir)) files.push('uploads');
+    if (!files.length) return res.status(400).json({ message: '没有可备份的文件' });
+    const ts = new Date();
+    const stamp = `${ts.getFullYear()}${String(ts.getMonth() + 1).padStart(2, '0')}${String(ts.getDate()).padStart(2, '0')}-${ts.getTime()}`;
+    const outPath = path.join(__dirname, 'data', `backup-${stamp}.tar.gz`);
+    await fs.ensureDir(path.dirname(outPath));
+    await new Promise((resolve, reject) => {
+      const tar = spawn('tar', ['-czf', outPath, ...files], { cwd: __dirname });
+      tar.on('close', (code) => (code === 0 ? resolve() : reject(new Error('打包失败'))));
+      tar.on('error', reject);
+    });
+    res.download(outPath, path.basename(outPath), (err) => {
+      fs.remove(outPath).catch(() => {});
+      if (err && !res.headersSent) res.status(500).end();
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: '备份失败' });
+  }
+});
+
+// 恢复备份
+const restoreUpload = multer({ storage: multer.memoryStorage() });
+app.post('/api/backup/restore', requireAuth, requireAdmin, restoreUpload.single('backup'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ message: '缺少备份文件' });
+  const tmpPath = path.join(__dirname, 'data', `restore-${Date.now()}.tar.gz`);
+  try {
+    await fs.ensureDir(path.dirname(tmpPath));
+    await fs.writeFile(tmpPath, req.file.buffer);
+    // 关闭并清理现有数据库文件，避免锁住
+    await resetSqlite();
+    await Promise.all([
+      fs.remove(dataFile).catch(() => {}),
+      fs.remove(`${dataFile}-wal`).catch(() => {}),
+      fs.remove(`${dataFile}-shm`).catch(() => {})
+    ]);
+    await new Promise((resolve, reject) => {
+      const tar = spawn('tar', ['-xzf', tmpPath, '-C', __dirname], { cwd: __dirname });
+      tar.on('close', (code) => (code === 0 ? resolve() : reject(new Error('解压失败'))));
+      tar.on('error', reject);
+    });
+    await resetSqlite();
+    const restored = await loadDb();
+    await reconcileImages(restored);
+    res.json({ message: '备份已恢复' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: '恢复失败', error: err.message });
+  } finally {
+    fs.remove(tmpPath).catch(() => {});
+  }
 });
 
 app.get('/api/stats', async (req, res) => {
@@ -357,27 +823,38 @@ app.post('/api/upload', requireAuth, upload.single('image'), async (req, res) =>
 
     const watermarkText = autoWatermark ? (watermarkContent || 'nodeimage.com clone') : '';
 
-    const processed = await processImage(req.file.buffer, {
-      compressToWebp,
-      webpQuality,
-      watermarkText
+    const { processed, thumbBuffer } = await enqueueUpload(async () => {
+      const p = await processImage(req.file.buffer, {
+        compressToWebp,
+        webpQuality,
+        watermarkText
+      });
+      const tb = await sharp(p.buffer)
+        .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer();
+      return { processed: p, thumbBuffer: tb };
     });
 
+    const now = new Date();
+    const year = String(now.getFullYear());
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const dir = path.join(uploadDir, year, month);
+    await fs.ensureDir(dir);
+
     const id = nanoid(12);
-    const filename = `${id}.${processed.ext}`;
+    const filenameOnly = `${id}.${processed.ext}`;
+    const filename = `${year}/${month}/${filenameOnly}`;
     const filePath = path.join(uploadDir, filename);
     await fs.writeFile(filePath, processed.buffer);
 
-    const thumbBuffer = await sharp(processed.buffer)
-      .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 80 })
-      .toBuffer();
-    const thumbName = `${id}_thumb.webp`;
-    await fs.writeFile(path.join(thumbDir, thumbName), thumbBuffer);
+    const thumbNameOnly = `${id}_thumb.webp`;
+    const thumbName = `${year}/${month}/${thumbNameOnly}`;
+    await fs.writeFile(path.join(uploadDir, thumbName), thumbBuffer);
 
     const baseUrl = getBaseUrl(req);
     const fileUrl = `${baseUrl}/uploads/${filename}`;
-    const thumbUrl = `${baseUrl}/uploads/thumbs/${thumbName}`;
+    const thumbUrl = `${baseUrl}/uploads/${thumbName}`;
 
     const record = {
       id,
@@ -422,7 +899,7 @@ app.get('/api/images', requireAuth, async (req, res) => {
   const slice = items.slice(start, end).map((img) => ({
     ...img,
     url: `${getBaseUrl(req)}/uploads/${img.filename}`,
-    thumbUrl: `${getBaseUrl(req)}/uploads/thumbs/${img.thumbName}`
+    thumbUrl: `${getBaseUrl(req)}/uploads/${img.thumbName || img.filename}`
   }));
   const totalPages = Math.max(1, Math.ceil(items.length / limit));
   res.json({
@@ -440,8 +917,12 @@ app.post('/api/images/delete', requireAuth, async (req, res) => {
   const remaining = [];
   for (const img of req.db.images) {
     if (img.userId === req.user.id && ids.includes(img.id)) {
-      await fs.remove(path.join(uploadDir, img.filename));
-      if (img.thumbName) await fs.remove(path.join(thumbDir, img.thumbName));
+      try {
+        await fs.remove(path.join(uploadDir, img.filename));
+        if (img.thumbName) await fs.remove(path.join(uploadDir, img.thumbName));
+      } catch (err) {
+        console.error('删除文件失败', err.message);
+      }
     } else {
       remaining.push(img);
     }
@@ -461,7 +942,7 @@ app.get('/api/v1/list', requireAuth, async (req, res) => {
   const items = userImages.slice(start, start + limit).map((img) => ({
     id: img.id,
     url: `${getBaseUrl(req)}/uploads/${img.filename}`,
-    thumbUrl: `${getBaseUrl(req)}/uploads/thumbs/${img.thumbName}`,
+    thumbUrl: `${getBaseUrl(req)}/uploads/${img.thumbName || img.filename}`,
     size: img.size,
     width: img.width,
     height: img.height,
@@ -476,8 +957,12 @@ app.delete('/api/v1/delete/:id', requireAuth, async (req, res) => {
   let removed = false;
   for (const img of req.db.images) {
     if (img.userId === req.user.id && img.id === targetId) {
+      try {
       await fs.remove(path.join(uploadDir, img.filename));
-      if (img.thumbName) await fs.remove(path.join(thumbDir, img.thumbName));
+      if (img.thumbName) await fs.remove(path.join(uploadDir, img.thumbName));
+      } catch (err) {
+        console.error('删除文件失败', err.message);
+      }
       removed = true;
     } else {
       remaining.push(img);
@@ -496,32 +981,26 @@ app.use((req, res) => {
 // --- 自动删除过期图片 ---
 async function cleanupExpiredImages() {
   try {
-    const db = await loadDb();
+    const db = await getSqlite();
     const now = Date.now();
-    const remaining = [];
+    const rows = await db.all('SELECT * FROM images WHERE autoDelete = 1 AND deleteAfterDays IS NOT NULL');
     let removed = 0;
-    for (const img of db.images) {
-      if (img.autoDelete && img.deleteAfterDays) {
-        const expiresAt = img.createdAt + img.deleteAfterDays * 86400000;
-        if (now >= expiresAt) {
+    for (const img of rows) {
+      const expiresAt = img.createdAt + img.deleteAfterDays * 86400000;
+      if (now >= expiresAt) {
+        try {
           await fs.remove(path.join(uploadDir, img.filename)).catch(() => {});
-          if (img.thumbName) await fs.remove(path.join(thumbDir, img.thumbName)).catch(() => {});
-          removed++;
-          continue;
-        }
+          if (img.thumbName) await fs.remove(path.join(uploadDir, img.thumbName)).catch(() => {});
+        } catch (e) { /* ignore */ }
+        await db.run('DELETE FROM images WHERE id = ?', img.id);
+        removed++;
       }
-      remaining.push(img);
     }
-    if (removed > 0) {
-      db.images = remaining;
-      await saveDb(db);
-      console.log(`Auto-delete: removed ${removed} expired image(s)`);
-    }
+    if (removed > 0) console.log(`Auto-delete: removed ${removed} expired image(s)`);
   } catch (err) {
     console.error('Auto-delete cleanup error:', err);
   }
 }
-// 每小时检查一次
 setInterval(cleanupExpiredImages, 3600000);
 
 app.listen(PORT, () => {

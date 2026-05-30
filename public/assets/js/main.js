@@ -1,5 +1,11 @@
+const savedTheme = localStorage.getItem('nodeimage_theme');
+function detectSystemTheme() {
+  if (typeof window === 'undefined' || !window.matchMedia) return 'light';
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
 const state = {
-  theme: localStorage.getItem('nodeimage_theme') || 'light',
+  theme: savedTheme || detectSystemTheme(),
   settings: {
     compressToWebp: localStorage.getItem('ni_compressToWebp') !== 'false',
     webpQuality: Number(localStorage.getItem('ni_webpQuality')) || 95,
@@ -24,7 +30,8 @@ const state = {
     name: 'Nodeimage',
     subtitle: 'NodeSeek专用图床·克隆版',
     icon: null,
-    footer: 'Nodeimage 克隆版 · 本地演示'
+    footer: 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
+    registrationEnabled: false
   }
 };
 
@@ -35,6 +42,11 @@ const els = {
   progressContainer: document.getElementById('progressContainer'),
   progressText: document.getElementById('progressText'),
   resultContainer: document.getElementById('resultContainer'),
+  resultCopyAllBar: document.getElementById('resultCopyAllBar'),
+  copyAllDirectBtn: document.getElementById('copyAllDirectBtn'),
+  copyAllHtmlBtn: document.getElementById('copyAllHtmlBtn'),
+  copyAllMdBtn: document.getElementById('copyAllMdBtn'),
+  copyAllBbBtn: document.getElementById('copyAllBbBtn'),
   historyView: document.getElementById('historyView'),
   mainView: document.getElementById('mainView'),
   apiView: document.getElementById('apiView'),
@@ -53,7 +65,6 @@ const els = {
   autoDelete: document.getElementById('autoDelete'),
   deleteDays: document.getElementById('deleteDays'),
   daysInputInline: document.getElementById('daysInputInline'),
-  watermarkSuboptions: document.getElementById('watermarkSuboptions'),
   settingsBtn: document.getElementById('settingsBtn'),
   backToUploadBtn: document.getElementById('backToUploadBtn'),
   flipCardInner: document.getElementById('flipCardInner'),
@@ -84,13 +95,19 @@ const els = {
   brandNameInput: document.getElementById('brandNameInput'),
   brandSubtitleInput: document.getElementById('brandSubtitleInput'),
   brandIconInput: document.getElementById('brandIconInput'),
+  allowRegisterInput: document.getElementById('allowRegisterInput'),
   applyBrandingBtn: document.getElementById('applyBrandingBtn'),
+  usersList: document.getElementById('usersList'),
+  backupDownloadBtn: document.getElementById('backupDownloadBtn'),
+  backupRestoreBtn: document.getElementById('backupRestoreBtn'),
+  backupFileInput: document.getElementById('backupFileInput'),
   selectAllCheckbox: document.getElementById('selectAllCheckbox'),
   selectionText: document.getElementById('selectionText'),
   batchActionsBar: document.getElementById('batchActionsBar'),
   batchOperations: document.getElementById('batchOperations'),
   batchCopyBtn: document.getElementById('batchCopyBtn'),
   batchDeleteBtn: document.getElementById('batchDeleteBtn'),
+  historyCopyDropdown: document.getElementById('historyCopyDropdown'),
   imagesGrid: document.getElementById('imagesGrid'),
   historyPagination: document.getElementById('historyPagination'),
   apiKeyInput: document.getElementById('apiKeyInput'),
@@ -102,7 +119,8 @@ const els = {
   modal: document.getElementById('imageModal'),
   modalImage: document.getElementById('modalImage'),
   closeModal: document.getElementById('closeModal'),
-  zoomSlider: document.getElementById('zoomSlider')
+  zoomSlider: document.getElementById('zoomSlider'),
+  registerBtn: document.getElementById('registerBtn')
 };
 
 const allowedTypes = [
@@ -116,19 +134,47 @@ const allowedTypes = [
 
 const ICONS = {
   url: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 14a5 5 0 0 1 0-7.07l1.76-1.76a5 5 0 0 1 7.07 7.07l-1.42 1.42"/><path d="M14 10a5 5 0 0 1 0 7.07l-1.76 1.76a5 5 0 0 1-7.07-7.07l1.42-1.42"/></svg>',
-  html: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="m10 9-3 3 3 3"/><path d="m14 15 3-3-3-3"/><path d="M21 3H3v18h18V3Z"/></svg>',
-  markdown: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18v10H3z"/><path d="M7 15V9l2 2 2-2v6M15 15l3-3-3-3"/>\n</svg>'
+  html: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512" width="18" height="18" fill="currentColor"><path d="M392.8 1.2c-17-4.9-34.7 5-39.6 22l-128 448c-4.9 17 5 34.7 22 39.6s34.7-5 39.6-22l128-448c4.9-17-5-34.7-22-39.6zm80.6 120.1c-12.5 12.5-12.5 32.8 0 45.3L562.7 256l-89.4 89.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0l112-112c12.5-12.5 12.5-32.8 0-45.3l-112-112c-12.5-12.5-32.8-12.5-45.3 0zm-306.7 0c-12.5 12.5-32.8 12.5-45.3 0l-112 112c-12.5 12.5-12.5 32.8 0 45.3l112 112c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L77.3 256l89.4-89.4c12.5-12.5 12.5-32.8 0-45.3z"/></svg>',
+  markdown: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512" width="18" height="18" fill="currentColor"><path d="M593.8 59.1H46.2C20.7 59.1 0 79.8 0 105.2v301.5c0 25.5 20.7 46.2 46.2 46.2h547.7c25.5 0 46.2-20.7 46.1-46.1V105.2c0-25.4-20.7-46.1-46.2-46.1zM338.5 360.6H277v-120l-61.5 76.9-61.5-76.9v120H92.3V151.4h61.5l61.5 76.9 61.5-76.9h61.5v209.2zm135.3 3.1L381.5 256H443V151.4h61.5v104.6h61.5L473.8 363.7z"/></svg>',
+  bb: '<span class="text-icon">[BB]</span>'
 };
 
 // 修改账号密码流程的原密码验证标记
 let credVerified = false;
 
-function applyTheme(theme) {
+function applyCopyAllIcons() {
+  const setIcon = (el, icon) => {
+    if (!el) return;
+    const label = el.dataset.label || el.textContent.trim() || '复制全部';
+    el.innerHTML = `${label} ${icon}`;
+  };
+  setIcon(els.copyAllDirectBtn, ICONS.url);
+  setIcon(els.copyAllHtmlBtn, ICONS.html);
+  setIcon(els.copyAllMdBtn, ICONS.markdown);
+  setIcon(els.copyAllBbBtn, ICONS.bb);
+  const dropdownOptions = document.querySelectorAll('.copy-option');
+  dropdownOptions.forEach((opt) => {
+    const type = opt.dataset.type;
+    const icon =
+      type === 'html'
+        ? ICONS.html
+        : type === 'markdown'
+          ? ICONS.markdown
+          : type === 'bbcode'
+            ? ICONS.bb
+            : ICONS.url;
+    setIcon(opt, icon);
+  });
+}
+
+function applyTheme(theme, { persist = true } = {}) {
   const next = theme === 'dark' ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', next);
   document.body.setAttribute('data-theme', next);
   state.theme = next;
-  localStorage.setItem('nodeimage_theme', next);
+  if (persist) {
+    localStorage.setItem('nodeimage_theme', next);
+  }
   const sun = els.themeToggle.querySelector('.sun-icon');
   const moon = els.themeToggle.querySelector('.moon-icon');
   if (next === 'dark') {
@@ -147,6 +193,20 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function formatByType(item, type) {
+  const url = item.url;
+  switch (type) {
+    case 'html':
+      return `<img src="${url}" alt="image" />`;
+    case 'markdown':
+      return `![image](${url})`;
+    case 'bbcode':
+      return `[img]${url}[/img]`;
+    default:
+      return url;
+  }
+}
+
 function showNotification(message, type = 'info', duration = 3200) {
   const container = document.getElementById('notificationContainer');
   if (!container) return;
@@ -154,7 +214,7 @@ function showNotification(message, type = 'info', duration = 3200) {
   li.className = `notification ${type}`;
   li.innerHTML = `
     <div class="notification-content">
-      <div class="notification-icon">${type === 'error' ? '⚠️' : type === 'success' ? '✅' : 'ℹ️'}</div>
+      <div class="notification-icon">${type === 'error' ? '!' : type === 'success' ? '✓' : 'i'}</div>
       <div class="notification-text">${message}</div>
     </div>
     <div class="notification-progress-bar"></div>
@@ -218,7 +278,17 @@ async function refreshUserStatus() {
     els.openAuthBtn.style.display = 'inline-flex';
     els.openAuthBtn.classList.remove('hidden-auth');
   }
+  if (els.registerBtn) {
+    const showReg = state.branding.registrationEnabled && !state.user;
+    els.registerBtn.style.display = showReg ? 'inline-flex' : 'none';
+  }
   setSettingsEnabled(Boolean(state.user));
+
+  if (isAdminUser()) {
+    loadAdminUsers();
+  } else if (els.usersList) {
+    els.usersList.innerHTML = '<div class="text-muted">仅管理员可见</div>';
+  }
 }
 
 async function updateStats() {
@@ -288,8 +358,12 @@ function switchView(view) {
     state.resultFormats.clear();
     els.resultContainer.innerHTML = '';
     els.resultContainer.style.display = 'none';
+    if (els.resultCopyAllBar) els.resultCopyAllBar.style.display = 'none';
   } else if (state.results.length) {
     els.resultContainer.style.display = 'grid';
+    if (els.resultCopyAllBar) els.resultCopyAllBar.style.display = 'flex';
+  } else if (els.resultCopyAllBar) {
+    els.resultCopyAllBar.style.display = 'none';
   }
 }
 
@@ -300,20 +374,27 @@ function flipToSettings(showSettings) {
 function buildUrlButtons(result, withActive = false, onChange, activeType = 'direct') {
   const formats = [
     { type: 'direct', label: '直链', value: result.url },
-    { type: 'markdown', label: 'Markdown', value: result.markdown },
     { type: 'html', label: 'HTML', value: result.html },
+    { type: 'markdown', label: 'Markdown', value: result.markdown },
     { type: 'bbcode', label: 'BBCode', value: result.bbcode }
   ];
   const container = document.createElement('div');
-  container.className = 'url-buttons glass-radio-group';
+  container.className = `url-buttons glass-radio-group ${activeType || 'direct'}`;
+  const glider = document.createElement('div');
+  glider.className = 'glass-glider';
+  container.appendChild(glider);
+
   formats.forEach((fmt, idx) => {
     const btn = document.createElement('button');
     const isActive = withActive && (fmt.type === activeType || (!activeType && idx === 0));
     btn.className = `format-btn ${isActive ? 'active' : ''}`;
-    btn.textContent = fmt.label;
+    btn.innerHTML = fmt.icon || fmt.label;
+    if (isActive) container.classList.add(fmt.type);
     btn.addEventListener('click', () => {
       container.querySelectorAll('.format-btn').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
+      container.classList.remove('direct', 'html', 'markdown', 'bbcode');
+      container.classList.add(fmt.type);
       if (onChange) {
         onChange(fmt.value, btn, fmt.type);
       }
@@ -327,7 +408,11 @@ function buildUrlButtons(result, withActive = false, onChange, activeType = 'dir
 function renderResults() {
   if (!state.results.length) {
     els.resultContainer.style.display = 'none';
+    if (els.resultCopyAllBar) els.resultCopyAllBar.style.display = 'none';
     return;
+  }
+  if (els.resultCopyAllBar) {
+    els.resultCopyAllBar.style.display = state.results.length >= 2 ? 'flex' : 'none';
   }
   els.resultContainer.style.display = 'grid';
   els.resultContainer.innerHTML = '';
@@ -356,10 +441,11 @@ function renderResults() {
     titleRow.className = 'title-row';
     const idSpan = document.createElement('div');
     idSpan.className = 'id';
-    idSpan.textContent = res.filename || res.id;
+    idSpan.textContent = res.id || res.filename || '图片';
     const dateSpan = document.createElement('div');
     dateSpan.className = 'date';
-    dateSpan.textContent = `${new Date().toLocaleString()} · 已上传`;
+    const sizeText = formatSize(res.size) || '';
+    dateSpan.textContent = `${sizeText ? `${sizeText} · ` : ''}已上传`;
     titleRow.appendChild(idSpan);
     titleRow.appendChild(dateSpan);
     body.appendChild(titleRow);
@@ -369,17 +455,13 @@ function renderResults() {
     const linkInput = document.createElement('input');
     linkInput.value = formatValue(res, currentFormat);
     linkInput.readOnly = true;
-    const copyBtn = document.createElement('button');
-    copyBtn.textContent = '复制';
-    copyBtn.addEventListener('click', () => copyText(linkInput.value, '链接已复制'));
     linkInputWrap.appendChild(linkInput);
-    linkInputWrap.appendChild(copyBtn);
     body.appendChild(linkInputWrap);
 
     const formats = [
       { label: '直链', type: 'direct', value: formatValue(res, 'direct'), color: '#a4fe81', icon: ICONS.url },
-      { label: 'Markdown', type: 'markdown', value: formatValue(res, 'markdown'), color: '#ffe488', icon: ICONS.markdown },
       { label: 'HTML', type: 'html', value: formatValue(res, 'html'), color: '#ffe488', icon: ICONS.html },
+      { label: 'Markdown', type: 'markdown', value: formatValue(res, 'markdown'), color: '#ffe488', icon: ICONS.markdown },
       { label: '[BB]', type: 'bbcode', value: formatValue(res, 'bbcode'), color: '#ffa590', icon: '[BB]' }
     ];
     const formatRow = createFormatSelector(formats, currentFormat, (f) => {
@@ -388,12 +470,6 @@ function renderResults() {
       copyText(f.value, `${f.label} 已复制`);
     });
     body.appendChild(formatRow);
-
-    const openBtn = document.createElement('button');
-    openBtn.className = 'tailwind-btn simple-view-btn';
-    openBtn.textContent = '查看';
-    openBtn.addEventListener('click', () => openImageModal(res.url));
-    body.appendChild(openBtn);
 
     card.appendChild(body);
     els.resultContainer.appendChild(card);
@@ -411,7 +487,7 @@ async function uploadFile(file) {
   formData.append('autoDelete', state.settings.autoDelete);
   formData.append('deleteDays', state.settings.deleteDays);
 
-  showProgress(`上传中 ${file.name}...`);
+  showProgress('上传中...');
   try {
     const res = await fetch('/api/upload', {
       method: 'POST',
@@ -496,7 +572,7 @@ function renderHistory() {
     const delBtn = document.createElement('button');
     delBtn.className = 'delete-btn';
     delBtn.title = '删除';
-    delBtn.innerHTML = '🗑️';
+    delBtn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       deleteImages([img.id]);
@@ -514,7 +590,9 @@ function renderHistory() {
     idSpan.textContent = img.id;
     const dateSpan = document.createElement('div');
     dateSpan.className = 'date';
-    dateSpan.textContent = new Date(img.createdAt).toLocaleDateString();
+    const sizeText = formatSize(img.size) || '';
+    const dateText = img.createdAt ? new Date(img.createdAt).toLocaleDateString() : '';
+    dateSpan.textContent = `${dateText}${sizeText ? ` · ${sizeText}` : ''}`;
     titleRow.appendChild(idSpan);
     titleRow.appendChild(dateSpan);
     body.appendChild(titleRow);
@@ -528,13 +606,13 @@ function renderHistory() {
     copyBtn.textContent = '复制';
     copyBtn.addEventListener('click', () => copyText(linkInput.value, '链接已复制'));
     linkInputWrap.appendChild(linkInput);
-    linkInputWrap.appendChild(copyBtn);
+    
     body.appendChild(linkInputWrap);
 
     const formats = [
       { label: '直链', type: 'direct', value: formatValue(img, 'direct'), color: '#a4fe81', icon: ICONS.url },
-      { label: 'Markdown', type: 'markdown', value: formatValue(img, 'markdown'), color: '#ffe488', icon: ICONS.markdown },
       { label: 'HTML', type: 'html', value: formatValue(img, 'html'), color: '#ffe488', icon: ICONS.html },
+      { label: 'Markdown', type: 'markdown', value: formatValue(img, 'markdown'), color: '#ffe488', icon: ICONS.markdown },
       { label: '[BB]', type: 'bbcode', value: formatValue(img, 'bbcode'), color: '#ffa590', icon: '[BB]' }
     ];
     const formatRow = createFormatSelector(formats, currentFormat, (f) => {
@@ -595,6 +673,9 @@ function updateBatchBar() {
   const checkbox = els.selectAllCheckbox;
   checkbox.checked = selectedCount === total && total > 0;
   checkbox.indeterminate = selectedCount > 0 && selectedCount < total;
+  if (els.historyCopyDropdown && selectedCount < 2) {
+    els.historyCopyDropdown.style.display = 'none';
+  }
 }
 
 function formatValue(img, type) {
@@ -608,6 +689,20 @@ function formatValue(img, type) {
     default:
       return img.url;
   }
+}
+
+function copyAllLinks(type, scope) {
+  const list = scope === 'history' ? state.history.items : state.results;
+  if (!list || !list.length) {
+    showNotification('暂无可复制的链接', 'error');
+    return;
+  }
+  const text = list.map((item) => formatValue(item, type)).filter(Boolean).join('\n');
+  if (!text) {
+    showNotification('暂无可复制的链接', 'error');
+    return;
+  }
+  copyText(text, `已复制 ${list.length} 条`);
 }
 
 async function logoutUser() {
@@ -668,7 +763,7 @@ async function loadHistory(page = 1) {
     return;
   }
   try {
-    const res = await fetch(`/api/images?page=${page}&limit=9`, { credentials: 'include' });
+    const res = await fetch(`/api/images?page=${page}&limit=12`, { credentials: 'include' });
     if (res.status === 401) {
       toggleAuthModal(true);
       return;
@@ -800,6 +895,10 @@ async function regenerateApiKey() {
   }
 }
 
+function isAdminUser() {
+  return state.user && (state.user.username === 'admin' || state.user.id === 'admin' || state.user.level >= 9);
+}
+
 async function loginUser() {
   const username = els.loginUsername.value.trim();
   const password = els.loginPassword.value;
@@ -818,10 +917,6 @@ async function loginUser() {
     if (!res.ok) throw new Error(data?.message || '操作失败');
     showNotification(data.message || '成功', 'success');
     els.loginPassword.value = '';
-    els.openAuthBtn.style.display = 'none';
-    els.openAuthBtn.classList.add('hidden-auth');
-    state.user = { username };
-    els.userControls.style.display = 'flex';
     await refreshUserStatus();
     await updateStats();
     toggleAuthModal(false);
@@ -829,6 +924,34 @@ async function loginUser() {
   } catch (err) {
     console.error(err);
     showNotification(err.message, 'error');
+  }
+}
+
+async function registerUser() {
+  const username = els.loginUsername.value.trim();
+  const password = els.loginPassword.value;
+  if (!username || !password) {
+    showNotification('请输入用户名和密码', 'error');
+    return;
+  }
+  try {
+    const res = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+      credentials: 'include'
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || '注册失败');
+    showNotification(data.message || '注册成功', 'success');
+    els.loginPassword.value = '';
+    await refreshUserStatus();
+    await updateStats();
+    toggleAuthModal(false);
+    setSettingsEnabled(true);
+  } catch (err) {
+    console.error(err);
+    showNotification(err.message || '注册失败', 'error');
   }
 }
 
@@ -840,7 +963,12 @@ function setupEventListeners() {
       toggleAuthModal(true);
       return;
     }
+    if (!isAdminUser()) {
+      showNotification('权限不足', 'error');
+      return;
+    }
     flipToSettings(true);
+    loadAdminUsers();
   });
   els.backToUploadBtn.addEventListener('click', () => flipToSettings(false));
   // 只允许点击上传内容区域触发 fileInput，避免点击 result-container 触发
@@ -1052,6 +1180,9 @@ function setupEventListeners() {
   }
 
   els.loginBtn.addEventListener('click', () => loginUser());
+  if (els.registerBtn) {
+    els.registerBtn.addEventListener('click', () => registerUser());
+  }
 
   // 只保留一个返回按钮
   els.backBtn2.style.display = 'none';
@@ -1066,16 +1197,96 @@ function setupEventListeners() {
   });
 
   els.batchCopyBtn.addEventListener('click', () => {
-    const ids = Array.from(state.history.selected);
-    const urls = state.history.items.filter((i) => ids.includes(i.id)).map((i) => i.url).join('\n');
-    if (!urls) return;
-    copyText(urls, '链接已复制');
+    const count = state.history.selected.size;
+    if (count < 2) {
+      showNotification('请选择至少两张图片', 'error');
+      return;
+    }
+    if (els.historyCopyDropdown) {
+      const isShown = els.historyCopyDropdown.style.display === 'flex';
+      els.historyCopyDropdown.style.display = isShown ? 'none' : 'flex';
+    }
   });
   els.batchDeleteBtn.addEventListener('click', () => deleteImages(Array.from(state.history.selected)));
 
+  const bindCopyAll = (btn, type, scope) => {
+    if (!btn) return;
+    btn.addEventListener('click', () => copyAllLinks(type, scope));
+  };
+  bindCopyAll(els.copyAllDirectBtn, 'direct', 'results');
+  bindCopyAll(els.copyAllHtmlBtn, 'html', 'results');
+  bindCopyAll(els.copyAllMdBtn, 'markdown', 'results');
+  bindCopyAll(els.copyAllBbBtn, 'bbcode', 'results');
+
+  if (els.historyCopyDropdown) {
+    const options = els.historyCopyDropdown.querySelectorAll('.copy-option');
+    options.forEach((opt) => {
+      opt.addEventListener('click', () => {
+        const type = opt.dataset.type;
+        copyAllLinks(type === 'bbcode' ? 'bbcode' : type, 'history');
+        els.historyCopyDropdown.style.display = 'none';
+      });
+    });
+    document.addEventListener('click', (e) => {
+      if (!els.historyCopyDropdown) return;
+      if (els.historyCopyDropdown.style.display === 'none') return;
+      if (els.batchCopyBtn.contains(e.target) || els.historyCopyDropdown.contains(e.target)) return;
+      els.historyCopyDropdown.style.display = 'none';
+    });
+  }
+
+  if (els.backupDownloadBtn) {
+    els.backupDownloadBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/backup', { credentials: 'include' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.message || '备份失败');
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `nodeimage-backup-${Date.now()}.tar.gz`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showNotification('备份已生成并下载', 'success');
+      } catch (err) {
+        showNotification(err.message || '备份失败', 'error');
+      }
+    });
+  }
+
+  if (els.backupRestoreBtn && els.backupFileInput) {
+    els.backupRestoreBtn.addEventListener('click', () => els.backupFileInput.click());
+    els.backupFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const formData = new FormData();
+      formData.append('backup', file);
+      try {
+        const res = await fetch('/api/backup/restore', {
+          method: 'POST',
+          body: formData,
+          credentials: 'include'
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || '恢复失败');
+        showNotification('备份已恢复，稍后刷新数据', 'success');
+        setTimeout(() => window.location.reload(), 800);
+      } catch (err) {
+        showNotification(err.message || '恢复失败', 'error');
+      } finally {
+        e.target.value = '';
+      }
+    });
+  }
+
   els.copyApiKeyBtn.addEventListener('click', () => {
-    if (els.apiKeyInput.value) copyText(els.apiKeyInput.value, 'API 密钥已复制');
-  });
+  if (els.apiKeyInput.value) copyText(els.apiKeyInput.value, 'API 密钥已复制');
+});
   els.regenerateApiKeyBtn.addEventListener('click', regenerateApiKey);
 
   els.curlCopyBtns.forEach((btn) => {
@@ -1089,11 +1300,23 @@ function setupEventListeners() {
   if (els.brandNameInput) els.brandNameInput.addEventListener('input', handleBrandingInput);
   if (els.brandSubtitleInput) els.brandSubtitleInput.addEventListener('input', handleBrandingInput);
   if (els.brandIconInput) els.brandIconInput.addEventListener('input', handleBrandingInput);
+  if (els.allowRegisterInput) els.allowRegisterInput.addEventListener('change', handleBrandingInput);
+
   bindModalInteractions();
 }
 
 async function init() {
-  applyTheme(state.theme);
+  applyTheme(state.theme, { persist: Boolean(savedTheme) });
+  // 跟随系统：仅当用户未手动选择主题时，监听系统主题变化
+  if (!savedTheme && typeof window !== 'undefined' && window.matchMedia) {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e) => applyTheme(e.matches ? 'dark' : 'light', { persist: false });
+    if (mq.addEventListener) {
+      mq.addEventListener('change', handler);
+    } else if (mq.addListener) {
+      mq.addListener(handler);
+    }
+  }
   syncSettingsUi();
   await loadBrandingFromServer();
   applyBranding();
@@ -1106,6 +1329,7 @@ async function init() {
   setSettingsEnabled(Boolean(state.user));
 }
 
+applyCopyAllIcons();
 init();
 
 function maybeShowSettingsTip() {
@@ -1133,13 +1357,13 @@ function handleBrandingInput() {
   state.branding.name = els.brandNameInput ? els.brandNameInput.value : state.branding.name;
   state.branding.subtitle = els.brandSubtitleInput ? els.brandSubtitleInput.value : state.branding.subtitle;
   state.branding.icon = els.brandIconInput ? els.brandIconInput.value : state.branding.icon;
-  // footer 字段已通过 applyBranding 直接渲染
+  state.branding.registrationEnabled = els.allowRegisterInput ? els.allowRegisterInput.checked : state.branding.registrationEnabled;
 }
 
 function applyBranding() {
   const displayName = state.branding.name || 'Nodeimage';
   const displaySubtitle = state.branding.subtitle || 'NodeSeek专用图床·克隆版';
-  const displayFooter = state.branding.footer || 'Nodeimage 克隆版 · 本地演示';
+  const displayFooter = state.branding.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>';
   const defaultLogo = els.brandLogo?.dataset?.default || els.brandLogo?.src || '';
   const displayIcon = state.branding.icon || defaultLogo;
 
@@ -1152,6 +1376,7 @@ function applyBranding() {
   if (els.brandNameInput) els.brandNameInput.value = state.branding.name;
   if (els.brandSubtitleInput) els.brandSubtitleInput.value = state.branding.subtitle;
   if (els.brandIconInput) els.brandIconInput.value = state.branding.icon || '';
+  if (els.allowRegisterInput) els.allowRegisterInput.checked = !!state.branding.registrationEnabled;
 
   // 动态渲染页脚
   const footer = document.querySelector('.global-footer');
@@ -1163,6 +1388,10 @@ function applyBranding() {
   link.rel = 'icon';
   if (!link.parentNode) document.head.appendChild(link);
   if (displayIcon) link.href = displayIcon;
+
+  if (els.registerBtn) {
+    els.registerBtn.style.display = state.branding.registrationEnabled ? 'inline-flex' : 'none';
+  }
 }
 
 function applyBrandingFromInputs() {
@@ -1171,6 +1400,7 @@ function applyBrandingFromInputs() {
   (async () => {
     try {
       await saveBrandingToServer();
+      await loadAdminUsers();
       await loadBrandingFromServer();
       applyBranding();
       showNotification('已应用图床个性化设置', 'success');
@@ -1192,10 +1422,12 @@ function setSettingsEnabled(isAuth) {
     els.brandNameInput,
     els.brandSubtitleInput,
     els.brandIconInput,
+    els.allowRegisterInput,
     els.applyBrandingBtn
   ].filter(Boolean);
+  const isAdmin = isAdminUser();
   inputs.forEach((el) => {
-    el.disabled = !isAuth;
+    el.disabled = !(isAuth && isAdmin);
   });
 }
 
@@ -1204,12 +1436,13 @@ async function loadBrandingFromServer() {
     const res = await fetch('/api/settings/branding', { credentials: 'include' });
     if (!res.ok) throw new Error('branding fetch failed');
     const data = await res.json();
-    state.branding = {
-      name: data.name || 'Nodeimage',
-      subtitle: data.subtitle || 'NodeSeek专用图床·克隆版',
-      icon: data.icon || '',
-      footer: data.footer || 'Nodeimage 克隆版 · 本地演示'
-    };
+  state.branding = {
+    name: data.name || 'Nodeimage',
+    subtitle: data.subtitle || 'NodeSeek专用图床·克隆版',
+    icon: data.icon || '',
+    footer: data.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
+    registrationEnabled: !!data.registrationEnabled
+  };
   } catch (err) {
     console.error(err);
   }
@@ -1220,7 +1453,8 @@ async function saveBrandingToServer() {
     name: state.branding.name || 'Nodeimage',
     subtitle: state.branding.subtitle || 'NodeSeek专用图床·克隆版',
     icon: state.branding.icon || '',
-    footer: state.branding.footer || 'Nodeimage 克隆版 · 本地演示'
+    footer: state.branding.footer || 'Modified from <a href="https://www.nodeimage.com/" target="_blank" rel="noopener noreferrer">NodeImage</a>',
+    registrationEnabled: !!state.branding.registrationEnabled
   };
   const res = await fetch('/api/settings/branding', {
     method: 'POST',
@@ -1233,4 +1467,86 @@ async function saveBrandingToServer() {
     throw new Error(data?.message || '保存失败');
   }
   return res.json();
+}
+
+async function loadAdminUsers() {
+  if (!isAdminUser() || !els.usersList) return;
+  try {
+    const res = await fetch('/api/admin/users', { credentials: 'include' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.message || '加载用户失败');
+    renderUsersList(data.users || []);
+  } catch (err) {
+    console.error(err);
+    if (els.usersList) els.usersList.innerHTML = `<div class="text-muted">${err.message}</div>`;
+  }
+}
+
+function renderUsersList(users) {
+  if (!els.usersList) return;
+  if (!users.length) {
+    els.usersList.innerHTML = '<div class="text-muted">暂无用户</div>';
+    return;
+  }
+  els.usersList.innerHTML = '';
+  users.forEach((u) => {
+    const row = document.createElement('div');
+    row.className = 'user-row';
+    const nameInput = document.createElement('input');
+    nameInput.className = 'text-input';
+    nameInput.value = u.username;
+    nameInput.placeholder = '用户名';
+    const passInput = document.createElement('input');
+    passInput.className = 'text-input';
+    passInput.type = 'password';
+    passInput.placeholder = '新密码（留空则不改）';
+
+    const btnSave = document.createElement('button');
+    btnSave.className = 'tailwind-btn';
+    btnSave.textContent = '保存';
+    btnSave.addEventListener('click', async () => {
+      const payload = { username: nameInput.value.trim() };
+      if (passInput.value) payload.password = passInput.value;
+      try {
+        const res = await fetch(`/api/admin/users/${u.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          credentials: 'include'
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.message || '保存失败');
+        showNotification('已更新用户', 'success');
+        loadAdminUsers();
+      } catch (err) {
+        showNotification(err.message || '保存失败', 'error');
+      }
+    });
+
+    const btnDel = document.createElement('button');
+    btnDel.className = 'tailwind-btn danger-btn';
+    btnDel.textContent = '删除';
+    btnDel.disabled = u.id === 'admin';
+    btnDel.addEventListener('click', async () => {
+      if (u.id === 'admin') return;
+      try {
+        const res = await fetch(`/api/admin/users/${u.id}`, {
+          method: 'DELETE',
+          credentials: 'include'
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.message || '删除失败');
+        showNotification('已删除用户', 'success');
+        loadAdminUsers();
+      } catch (err) {
+        showNotification(err.message || '删除失败', 'error');
+      }
+    });
+
+    row.appendChild(nameInput);
+    row.appendChild(passInput);
+    row.appendChild(btnSave);
+    row.appendChild(btnDel);
+    els.usersList.appendChild(row);
+  });
 }

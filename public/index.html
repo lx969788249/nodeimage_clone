@@ -84,7 +84,6 @@
               <p class="paste-hint">💡 你也可以直接 <kbd>Ctrl+V</kbd> 粘贴剪贴板中的图片</p>
               <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp,image/avif" multiple style="display:none;">
             </div>
-            <div class="result-container" id="resultContainer" style="display: none;"></div>
           </div>
           <!-- 设置面 -->
           <div class="setting-area" id="settingArea">
@@ -191,6 +190,30 @@
                   <h4>图标 URL/Base64</h4>
                   <input type="text" id="brandIconInput" placeholder="http://... 或 data:image/png;base64,..." class="text-input">
                 </div>
+                <div class="setting-group">
+                  <h4>允许注册</h4>
+                  <label class="checkbox-container" style="margin-bottom:0;">
+                    <input type="checkbox" id="allowRegisterInput">
+                    <span class="checkmark"></span>
+                    <div class="setting-label">
+                      <span class="setting-title">开启后允许新用户注册</span>
+                      <span class="setting-desc">默认关闭，仅管理员可登录使用</span>
+                    </div>
+                  </label>
+                </div>
+                <div class="setting-group">
+                  <h4>用户管理（仅管理员）</h4>
+                  <div id="usersList" class="user-list"></div>
+                </div>
+                <div class="setting-group">
+                  <h4>备份 / 恢复</h4>
+                  <div class="backup-actions">
+                    <button class="tailwind-btn apply-brand-btn" id="backupDownloadBtn">备份并下载</button>
+                    <button class="tailwind-btn apply-brand-btn" id="backupRestoreBtn">恢复备份</button>
+                    <input type="file" id="backupFileInput" accept=".tar.gz,.tgz,application/gzip" style="display:none;">
+                  </div>
+                  <div class="setting-desc">上传导出的备份包并应用</div>
+                </div>
               </div>
               <div style="margin-top:10px;text-align:left;">
                 <button class="tailwind-btn apply-brand-btn" id="applyBrandingBtn">应用设置</button>
@@ -198,16 +221,35 @@
             </div>
           </div>
         </div>
+        <div class="copy-all-bar" id="resultCopyAllBar" style="display: none;">
+          <div class="copy-all-group">
+            <button class="copy-pill pill-direct" id="copyAllDirectBtn">复制全部直链</button>
+            <button class="copy-pill pill-html" id="copyAllHtmlBtn">复制全部 HTML</button>
+            <button class="copy-pill pill-md" id="copyAllMdBtn">复制全部 Markdown</button>
+            <button class="copy-pill pill-bb" id="copyAllBbBtn">复制全部 BB</button>
+          </div>
+        </div>
+        <div class="result-container" id="resultContainer" style="display: none;"></div>
       </div>
 
       <div class="history-view" id="historyView" style="display: none;">
         <div class="recent-images" id="recentImages">
-          <h3>
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512">
-              <path d="M160 32c-35.3 0-64 28.7-64 64l0 224c0 35.3 28.7 64 64 64l352 0c35.3 0 64-28.7 64-64l0-224c0-35.3-28.7-64-64-64L160 32zM396 138.7l96 144c4.9 7.4 5.4 16.8 1.2 24.6S480.9 320 472 320l-144 0-48 0-80 0c-9.2 0-17.6-5.3-21.6-13.6s-2.9-18.2 2.9-25.4l64-80c4.6-5.7 11.4-9 18.7-9s14.2 3.3 18.7 9l17.3 21.6 56-84C360.5 132 368 128 376 128s15.5 4 20 10.7zM192 128a32 32 0 1 1 64 0 32 32 0 1 1 -64 0zM48 120c0-13.3-10.7-24-24-24S0 106.7 0 120L0 344c0 75.1 60.9 136 136 136l320 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-320 0c-48.6 0-88-39.4-88-88l0-224z" />
-            </svg>
-            历史上传
-          </h3>
+          <div class="history-header">
+            <h3>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512">
+                <path d="M160 32c-35.3 0-64 28.7-64 64l0 224c0 35.3 28.7 64 64 64l352 0c35.3 0 64-28.7 64-64l0-224c0-35.3-28.7-64-64-64L160 32zM396 138.7l96 144c4.9 7.4 5.4 16.8 1.2 24.6S480.9 320 472 320l-144 0-48 0-80 0c-9.2 0-17.6-5.3-21.6-13.6s-2.9-18.2 2.9-25.4l64-80c4.6-5.7 11.4-9 18.7-9s14.2 3.3 18.7 9l17.3 21.6 56-84C360.5 132 368 128 376 128s15.5 4 20 10.7zM192 128a32 32 0 1 1 64 0 32 32 0 1 1 -64 0zM48 120c0-13.3-10.7-24-24-24S0 106.7 0 120L0 344c0 75.1 60.9 136 136 136l320 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-320 0c-48.6 0-88-39.4-88-88l0-224z" />
+              </svg>
+              历史上传
+            </h3>
+            <div class="copy-all-bar" id="historyCopyAllBar" style="display: none;">
+              <div class="copy-all-group">
+                <button class="copy-pill pill-direct" id="historyCopyAllDirectBtn">复制全部直链</button>
+                <button class="copy-pill pill-html" id="historyCopyAllHtmlBtn">复制全部 HTML</button>
+                <button class="copy-pill pill-md" id="historyCopyAllMdBtn">复制全部 Markdown</button>
+                <button class="copy-pill pill-bb" id="historyCopyAllBbBtn">复制全部 BB</button>
+              </div>
+            </div>
+          </div>
           <div class="batch-actions-bar" id="batchActionsBar" style="display: none;">
             <div class="batch-actions-content">
               <div class="batch-selection">
@@ -219,6 +261,12 @@
               </div>
               <div class="batch-operations" id="batchOperations">
                 <button class="tailwind-btn batch-btn" id="batchCopyBtn">复制链接</button>
+                <div class="copy-dropdown" id="historyCopyDropdown" style="display: none;">
+                  <button class="tailwind-btn batch-btn copy-option" data-type="direct" data-label="复制全部">复制全部</button>
+                  <button class="tailwind-btn batch-btn copy-option" data-type="html" data-label="复制全部">复制全部</button>
+                  <button class="tailwind-btn batch-btn copy-option" data-type="markdown" data-label="复制全部">复制全部</button>
+                  <button class="tailwind-btn batch-btn copy-option" data-type="bbcode" data-label="复制全部">复制全部</button>
+                </div>
                 <button class="tailwind-btn batch-btn danger" id="batchDeleteBtn">删除</button>
               </div>
             </div>
@@ -329,6 +377,9 @@
             <div class="👍"></div>
           </div>
           <div class="progress-text" id="progressText">上传中...</div>
+          <div class="progress-bar">
+            <div class="progress-bar-inner"></div>
+          </div>
         </div>
       </div>
     </main>
@@ -361,6 +412,7 @@
           <input type="password" id="loginPassword" placeholder="密码" autocomplete="current-password">
           <div class="auth-actions">
             <button class="auth-btn-large" id="loginBtn">登录</button>
+            <button class="auth-btn-large" id="registerBtn" style="display:none;">注册</button>
           </div>
         </div>
       </div>

@@ -2,6 +2,5 @@ node_modules
 uploads
 npm-debug.log*
 yarn-error.log
-package-lock.json
 data/db.json
 .DS_Store
