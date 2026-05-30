@@ -5,7 +5,7 @@ WORKDIR /app
 # 安装依赖
 COPY package*.json ./
 RUN apk add --no-cache python3 make g++ \
-    && npm ci --production
+    && npm install --production
 
 # 拷贝应用代码
 COPY public ./public
