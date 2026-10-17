@@ -270,3 +270,30 @@ test('separate data/uploads mount semantics: every switch rename stays inside it
   assert.equal((await fs.readdir(path.join(f.root, 'uploads'))).some(x => x.startsWith('.restore-stage-')), false);
   await m.resetSqlite();
 });
+
+test('old archive without sessionVersion and with flat original/bare thumbnail restores in isolation', async t => {
+  const f = await fixture(t);
+  await f.upload(); const archive = await backup(f);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nodeimage-legacy-archive-'));
+  t.after(() => fs.remove(dir));
+  const original = path.join(dir, 'original.tar.gz'); await fs.writeFile(original, archive);
+  await tar.x({ file: original, cwd: dir });
+  const db = await open({ filename: path.join(dir, 'data/db.sqlite'), driver: sqlite3.Database });
+  const image = await db.get('SELECT * FROM images');
+  const user = await db.get("SELECT * FROM users WHERE id='admin'");
+  await fs.move(path.join(dir, 'uploads', image.filename), path.join(dir, 'uploads/legacy.webp'));
+  await fs.move(path.join(dir, 'uploads', image.thumbName), path.join(dir, 'uploads/thumbs/legacy_thumb.webp'));
+  await db.run("UPDATE images SET filename='legacy.webp', thumbName='legacy_thumb.webp'");
+  await db.exec('ALTER TABLE users DROP COLUMN sessionVersion'); await db.close();
+  const legacy = path.join(dir, 'legacy.tar.gz'); await tar.c({ cwd: dir, file: legacy, gzip: true }, ['data', 'uploads']);
+  await f.closeDb();
+  const result = await f.request('/api/backup/restore', { method: 'POST', key: f.key, body: f.form(await fs.readFile(legacy), 'backup', 'legacy.tar.gz') });
+  assert.equal(result.status, 200, JSON.stringify(result.data));
+  const restored = await open({ filename: path.join(f.root, 'data/db.sqlite'), driver: sqlite3.Database });
+  const current = await restored.get("SELECT * FROM users WHERE id='admin'");
+  assert.equal(current.apiKey, user.apiKey); assert.equal(current.passwordHash, user.passwordHash); assert.equal(current.sessionVersion, 1);
+  const record = await restored.get('SELECT * FROM images');
+  assert.equal(record.filename, 'legacy.webp'); assert.equal(record.thumbName, 'thumbs/legacy_thumb.webp');
+  assert.ok(await fs.pathExists(path.join(f.root, 'uploads/legacy.webp')));
+  await restored.close();
+});

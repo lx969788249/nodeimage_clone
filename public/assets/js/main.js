@@ -1,4 +1,4 @@
-const savedTheme = localStorage.getItem('nodeimage_theme');
+let savedTheme = localStorage.getItem('nodeimage_theme');
 function detectSystemTheme() {
   if (typeof window === 'undefined' || !window.matchMedia) return 'light';
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -30,7 +30,8 @@ const state = {
     name: 'Nodeimage',
     subtitle: 'NodeSeek专用图床·克隆版',
     icon: null,
-    registrationEnabled: false
+    registrationEnabled: false,
+    uploadMaxFileBytes: 100 * 1024 * 1024
   }
 };
 
@@ -51,7 +52,6 @@ const els = {
   apiView: document.getElementById('apiView'),
   historyBtn: document.getElementById('historyBtn'),
   backBtn: document.getElementById('backBtn'),
-  backBtn2: document.getElementById('backBtn2'),
   apiBtn: document.getElementById('apiBtn'),
   totalImages: document.getElementById('totalImages'),
   compressToWebp: document.getElementById('compressToWebp'),
@@ -91,7 +91,6 @@ const els = {
   brandSubtitleInput: document.getElementById('brandSubtitleInput'),
   brandIconInput: document.getElementById('brandIconInput'),
   allowRegisterInput: document.getElementById('allowRegisterInput'),
-  applyBrandingBtn: document.getElementById('applyBrandingBtn'),
   usersList: document.getElementById('usersList'),
   backupDownloadBtn: document.getElementById('backupDownloadBtn'),
   backupRestoreBtn: document.getElementById('backupRestoreBtn'),
@@ -117,6 +116,66 @@ const els = {
   zoomSlider: document.getElementById('zoomSlider'),
   registerBtn: document.getElementById('registerBtn')
 };
+
+const elsBackup = {
+  intervalHours: document.getElementById('backupIntervalHours'),
+  keepCount: document.getElementById('backupKeepCount'),
+  s3Provider: document.getElementById('s3Provider'),
+  s3Endpoint: document.getElementById('s3Endpoint'),
+  s3Region: document.getElementById('s3Region'),
+  s3Bucket: document.getElementById('s3Bucket'),
+  s3AccessKey: document.getElementById('s3AccessKey'),
+  s3SecretKey: document.getElementById('s3SecretKey'),
+  webhookUrl: document.getElementById('backupWebhookUrl'),
+  testS3Btn: document.getElementById('testS3Btn'),
+  testS3Result: document.getElementById('testS3Result'),
+  testWebhookBtn: document.getElementById('testWebhookBtn'),
+  testWebhookResult: document.getElementById('testWebhookResult'),
+  triggerBtn: document.getElementById('triggerBackupBtn')
+};
+
+async function loadBackupSettings() {
+  try {
+    const res = await fetch('/api/settings/backup', { credentials: 'include' });
+    if (!res.ok) throw new Error('读取备份设置失败');
+    const data = await res.json();
+    elsBackup.intervalHours.value = data.intervalHours;
+    elsBackup.keepCount.value = data.keepCount;
+    elsBackup.s3Endpoint.value = data.s3Endpoint || '';
+    elsBackup.s3Region.value = data.s3Region || '';
+    elsBackup.s3Bucket.value = data.s3Bucket || '';
+    elsBackup.s3AccessKey.placeholder = data.s3AccessKey ? `已配置 (${data.s3AccessKey})，留空保留` : 'Access Key ID';
+    elsBackup.s3SecretKey.placeholder = data.s3SecretKey ? '已配置，留空保留' : 'Secret Access Key';
+    elsBackup.webhookUrl.value = data.webhookUrl || '';
+  } catch (err) {
+    showNotification(err.message || '读取备份设置失败', 'error');
+  }
+}
+
+async function saveBackupSettings() {
+  const payload = {
+    intervalHours: Number(elsBackup.intervalHours.value) || 24,
+    keepCount: Number(elsBackup.keepCount.value) || 7,
+    s3Endpoint: elsBackup.s3Endpoint.value || '',
+    s3Region: elsBackup.s3Region.value || 'auto',
+    s3Bucket: elsBackup.s3Bucket.value || '',
+    webhookUrl: elsBackup.webhookUrl.value || ''
+  };
+  // A masked or empty credential displayed after GET must never overwrite a secret.
+  if (elsBackup.s3AccessKey.value) payload.s3AccessKey = elsBackup.s3AccessKey.value;
+  if (elsBackup.s3SecretKey.value) payload.s3SecretKey = elsBackup.s3SecretKey.value;
+  const res = await fetch('/api/settings/backup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    credentials: 'include'
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.message || '保存失败');
+  elsBackup.s3SecretKey.value = '';
+  elsBackup.s3AccessKey.value = '';
+  await loadBackupSettings();
+}
 
 const allowedTypes = [
   'image/png',
@@ -169,6 +228,7 @@ function applyTheme(theme, { persist = true } = {}) {
   state.theme = next;
   if (persist) {
     localStorage.setItem('nodeimage_theme', next);
+    savedTheme = next;
   }
   const sun = els.themeToggle.querySelector('.sun-icon');
   const moon = els.themeToggle.querySelector('.moon-icon');
@@ -188,20 +248,6 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function formatByType(item, type) {
-  const url = item.url;
-  switch (type) {
-    case 'html':
-      return `<img src="${url}" alt="image" />`;
-    case 'markdown':
-      return `![image](${url})`;
-    case 'bbcode':
-      return `[img]${url}[/img]`;
-    default:
-      return url;
-  }
-}
-
 function showNotification(message, type = 'info', duration = 3200) {
   const container = document.getElementById('notificationContainer');
   if (!container) return;
@@ -210,10 +256,11 @@ function showNotification(message, type = 'info', duration = 3200) {
   li.innerHTML = `
     <div class="notification-content">
       <div class="notification-icon">${type === 'error' ? '✕' : type === 'success' ? '✓' : type === 'warning' ? '⚠' : 'ℹ'}</div>
-      <div class="notification-text">${message}</div>
+      <div class="notification-text"></div>
     </div>
     <div class="notification-progress-bar"></div>
   `;
+  li.querySelector('.notification-text').textContent = String(message);
   container.appendChild(li);
   setTimeout(() => li.classList.add('show'), 20);
   setTimeout(() => {
@@ -249,6 +296,23 @@ function toggleChangeCredsModal(show) {
   }
 }
 
+function clearPrivateViews() {
+  state.results = [];
+  state.resultFormats.clear();
+  state.history.items = [];
+  state.history.selected.clear();
+  state.history.formatSelection.clear();
+  els.resultContainer.innerHTML = '';
+  els.imagesGrid.innerHTML = '';
+  els.apiKeyInput.value = '';
+  els.apiKeyInfo.textContent = '';
+  elsBackup.s3AccessKey.value = '';
+  elsBackup.s3SecretKey.value = '';
+  elsBackup.webhookUrl.value = '';
+  document.querySelectorAll('.settings-section.dirty').forEach(section => section.classList.remove('dirty'));
+  switchView('main');
+}
+
 async function refreshUserStatus() {
   try {
     const res = await fetch('/api/user/status', { credentials: 'include' });
@@ -277,6 +341,7 @@ async function refreshUserStatus() {
     const showReg = state.branding.registrationEnabled && !state.user;
     els.registerBtn.style.display = showReg ? 'inline-flex' : 'none';
   }
+  if (!state.user) clearPrivateViews();
   setSettingsEnabled(Boolean(state.user));
 
   if (isAdminUser()) {
@@ -346,7 +411,6 @@ function switchView(view) {
   const flipCard = document.querySelector('.flip-card');
   if (flipCard) flipCard.style.display = view === 'main' ? 'block' : 'none';
   els.backBtn.style.display = view !== 'main' ? 'inline-flex' : 'none';
-  els.backBtn2.style.display = 'none';
   if (view !== 'main') {
     state.results = [];
     state.resultFormats.clear();
@@ -360,7 +424,7 @@ function switchView(view) {
     els.resultCopyAllBar.style.display = 'none';
   }
   if (view === 'settings') {
-    loadBackupSettings();
+    if (isAdminUser()) loadBackupSettings();
     // 管理 section 仅管理员可见
     const isAdmin = isAdminUser();
     ['adminSection', 'registerSection', 'userManagementSection', 'backupSection', 'autoBackupSection'].forEach((id) => {
@@ -368,40 +432,6 @@ function switchView(view) {
       if (el) el.style.display = isAdmin ? '' : 'none';
     });
   }
-}
-
-function buildUrlButtons(result, withActive = false, onChange, activeType = 'direct') {
-  const formats = [
-    { type: 'direct', label: '直链', value: result.url },
-    { type: 'html', label: 'HTML', value: result.html },
-    { type: 'markdown', label: 'Markdown', value: result.markdown },
-    { type: 'bbcode', label: 'BBCode', value: result.bbcode }
-  ];
-  const container = document.createElement('div');
-  container.className = `url-buttons glass-radio-group ${activeType || 'direct'}`;
-  const glider = document.createElement('div');
-  glider.className = 'glass-glider';
-  container.appendChild(glider);
-
-  formats.forEach((fmt, idx) => {
-    const btn = document.createElement('button');
-    const isActive = withActive && (fmt.type === activeType || (!activeType && idx === 0));
-    btn.className = `format-btn ${isActive ? 'active' : ''}`;
-    btn.innerHTML = fmt.icon || fmt.label;
-    if (isActive) container.classList.add(fmt.type);
-    btn.addEventListener('click', () => {
-      container.querySelectorAll('.format-btn').forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      container.classList.remove('direct', 'html', 'markdown', 'bbcode');
-      container.classList.add(fmt.type);
-      if (onChange) {
-        onChange(fmt.value, btn, fmt.type);
-      }
-      copyText(fmt.value, `${fmt.label} 已复制`);
-    });
-    container.appendChild(btn);
-  });
-  return container;
 }
 
 function renderResults() {
@@ -494,6 +524,7 @@ async function uploadFile(file) {
       credentials: 'include'
     });
     if (res.status === 401) {
+      await refreshUserStatus();
       toggleAuthModal(true);
       showNotification('请先完成授权', 'error');
       return null;
@@ -532,6 +563,10 @@ async function handleFiles(fileList) {
     return;
   }
   for (const file of files) {
+    if (file.size > state.branding.uploadMaxFileBytes) {
+      showNotification(`${file.name} 超过上传上限 ${state.branding.uploadMaxFileBytes / (1024 * 1024)} MiB`, 'error');
+      continue;
+    }
     await uploadFile(file);
   }
 }
@@ -601,9 +636,6 @@ function renderHistory() {
     const linkInput = document.createElement('input');
     linkInput.value = formatValue(img, currentFormat);
     linkInput.readOnly = true;
-    const copyBtn = document.createElement('button');
-    copyBtn.textContent = '复制';
-    copyBtn.addEventListener('click', () => copyText(linkInput.value, '链接已复制'));
     linkInputWrap.appendChild(linkInput);
     
     body.appendChild(linkInputWrap);
@@ -691,7 +723,9 @@ function formatValue(img, type) {
 }
 
 function copyAllLinks(type, scope) {
-  const list = scope === 'history' ? state.history.items : state.results;
+  const list = scope === 'history'
+    ? state.history.items.filter(item => state.history.selected.has(item.id))
+    : state.results;
   if (!list || !list.length) {
     showNotification('暂无可复制的链接', 'error');
     return;
@@ -705,7 +739,8 @@ function copyAllLinks(type, scope) {
 }
 
 async function logoutUser() {
-  await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+  const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+  if (!response.ok) throw new Error('注销失败，请重试');
   state.user = null;
   await refreshUserStatus();
   await updateStats();
@@ -764,11 +799,13 @@ async function loadHistory(page = 1) {
   try {
     const res = await fetch(`/api/images?page=${page}&limit=12`, { credentials: 'include' });
     if (res.status === 401) {
+      await refreshUserStatus();
       toggleAuthModal(true);
       return;
     }
     const data = await res.json();
     if (!res.ok) throw new Error(data?.message || '获取历史失败');
+    if (page > (data.totalPages || 1)) return loadHistory(data.totalPages || 1);
     state.history.items = data.items || [];
     state.history.total = data.total || 0;
     state.history.totalPages = data.totalPages || 1;
@@ -805,6 +842,7 @@ async function deleteImages(ids) {
 }
 
 function openImageModal(url) {
+  els.modal.dispatchEvent(new Event('image-open'));
   els.modalImage.src = url;
   els.modalImage.style.transform = 'translate(-50%, -50%) scale(1)';
   els.zoomSlider.value = 1;
@@ -823,6 +861,11 @@ function bindModalInteractions() {
   let currentX = 0;
   let currentY = 0;
   let scale = 1;
+
+  els.modal.addEventListener('image-open', () => {
+    isPanning = false; currentX = 0; currentY = 0; scale = 1;
+    els.modalImage.classList.remove('panning');
+  });
 
   els.zoomSlider.addEventListener('input', () => {
     scale = Number(els.zoomSlider.value);
@@ -895,7 +938,7 @@ async function regenerateApiKey() {
 }
 
 function isAdminUser() {
-  return state.user && (state.user.username === 'admin' || state.user.id === 'admin' || state.user.level >= 9);
+  return state.user && (state.user.id === 'admin' || state.user.level >= 9);
 }
 
 async function loginUser() {
@@ -976,7 +1019,11 @@ function setupEventListeners() {
       uploadContent.addEventListener('mouseleave', () => els.uploadArea.classList.remove('hovering'));
     }
   }
-  els.fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+  els.fileInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // Selecting the same file again must dispatch another change.
+    handleFiles(files);
+  });
   els.uploadArea.addEventListener('dragover', (e) => {
     e.preventDefault();
     els.uploadArea.classList.add('dragover');
@@ -994,15 +1041,11 @@ function setupEventListeners() {
 
   els.historyBtn.addEventListener('click', () => loadHistory(1));
   els.apiBtn.addEventListener('click', () => {
+    if (!state.user) { toggleAuthModal(true); return; }
     switchView('api');
     loadApiKey();
   });
   els.backBtn.addEventListener('click', () => {
-    state.results = [];
-    els.resultContainer.innerHTML = '';
-    switchView('main');
-  });
-  els.backBtn2.addEventListener('click', () => {
     state.results = [];
     els.resultContainer.innerHTML = '';
     switchView('main');
@@ -1135,19 +1178,9 @@ function setupEventListeners() {
     }
   });
   els.logoutBtn.addEventListener('click', async () => {
-    await logoutUser();
+    try { await logoutUser(); }
+    catch (err) { showNotification(err.message || '注销失败', 'error'); }
   });
-  // Branding listeners
-  if (els.applyBrandingBtn) {
-    els.applyBrandingBtn.addEventListener('click', () => {
-      if (!state.user) {
-        toggleAuthModal(true);
-        return;
-      }
-      applyBrandingFromInputs();
-    });
-  }
-
   if (els.changePasswordBtn) {
     els.changePasswordBtn.addEventListener('click', () => {
       if (!state.user) {
@@ -1184,7 +1217,7 @@ function setupEventListeners() {
         toggleAuthModal(true);
         return;
       }
-      const oldPassword = (els.changeOldPassword.value || '').trim();
+      const oldPassword = els.changeOldPassword.value || '';
       // 如果还未验证原密码，先验证当前用户的原密码
       if (!credVerified) {
         if (!oldPassword) {
@@ -1211,8 +1244,8 @@ function setupEventListeners() {
       }
 
       const newUsername = (els.changeNewUsername.value || '').trim();
-      const newPassword = (els.changeNewPassword.value || '').trim();
-      const newPasswordConfirm = (els.changeNewPasswordConfirm.value || '').trim();
+      const newPassword = els.changeNewPassword.value || '';
+      const newPasswordConfirm = els.changeNewPasswordConfirm.value || '';
       if (!newUsername || !newPassword || !newPasswordConfirm) {
         showNotification('请完整填写新用户名和两次新密码', 'error');
         return;
@@ -1245,9 +1278,6 @@ function setupEventListeners() {
   if (els.registerBtn) {
     els.registerBtn.addEventListener('click', () => registerUser());
   }
-
-  // 只保留一个返回按钮
-  els.backBtn2.style.display = 'none';
 
   els.selectAllCheckbox.addEventListener('change', (e) => {
     if (e.target.checked) {
@@ -1374,88 +1404,10 @@ function setupEventListeners() {
     minio: { endpoint: 'http://localhost:9000', region: 'us-east-1' }
   };
 
-  const elsBackup = {
-    saveBtn: document.getElementById('saveBackupSettingsBtn'),
-    intervalHours: document.getElementById('backupIntervalHours'),
-    keepCount: document.getElementById('backupKeepCount'),
-    s3Provider: document.getElementById('s3Provider'),
-    s3Endpoint: document.getElementById('s3Endpoint'),
-    s3Region: document.getElementById('s3Region'),
-    s3Bucket: document.getElementById('s3Bucket'),
-    s3AccessKey: document.getElementById('s3AccessKey'),
-    s3SecretKey: document.getElementById('s3SecretKey'),
-    webhookUrl: document.getElementById('backupWebhookUrl'),
-    testS3Btn: document.getElementById('testS3Btn'),
-    testS3Result: document.getElementById('testS3Result'),
-    testWebhookBtn: document.getElementById('testWebhookBtn'),
-    testWebhookResult: document.getElementById('testWebhookResult'),
-    triggerBtn: document.getElementById('triggerBackupBtn'),
-    backupStatus: document.getElementById('backupStatus')
-  };
-
-  async function loadBackupSettings() {
-    try {
-      const res = await fetch('/api/settings/backup', { credentials: 'include' });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (elsBackup.intervalHours) elsBackup.intervalHours.value = data.intervalHours;
-      if (elsBackup.keepCount) elsBackup.keepCount.value = data.keepCount;
-      if (elsBackup.s3Endpoint) elsBackup.s3Endpoint.value = data.s3Endpoint || '';
-      if (elsBackup.s3Region) elsBackup.s3Region.value = data.s3Region || '';
-      if (elsBackup.s3Bucket) elsBackup.s3Bucket.value = data.s3Bucket || '';
-      if (elsBackup.s3AccessKey) elsBackup.s3AccessKey.value = data.s3AccessKey || '';
-      if (elsBackup.webhookUrl) elsBackup.webhookUrl.value = data.webhookUrl || '';
-      // s3SecretKey is masked by server, don't overwrite if user is editing
-    } catch (err) {
-      console.error('loadBackupSettings', err);
-    }
-  }
-
-  async function saveBackupSettings() {
-    const payload = {
-      intervalHours: Number(elsBackup.intervalHours?.value) || 24,
-      keepCount: Number(elsBackup.keepCount?.value) || 7,
-      s3Endpoint: elsBackup.s3Endpoint?.value || '',
-      s3Region: elsBackup.s3Region?.value || 'auto',
-      s3Bucket: elsBackup.s3Bucket?.value || '',
-      s3AccessKey: elsBackup.s3AccessKey?.value || '',
-      s3SecretKey: elsBackup.s3SecretKey?.value || '',
-      webhookUrl: elsBackup.webhookUrl?.value || ''
-    };
-    try {
-      const res = await fetch('/api/settings/backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include'
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.message || '保存失败');
-      // 密钥字段不回传完整值，清空输入框避免混淆
-      if (elsBackup.s3SecretKey) elsBackup.s3SecretKey.value = '';
-      showNotification(data.message || '备份设置已保存', 'success');
-      await loadBackupSettings();
-    } catch (err) {
-      showNotification(err.message, 'error');
-    }
-  }
-
   async function testS3() {
     if (elsBackup.testS3Result) elsBackup.testS3Result.textContent = '测试中...';
     try {
-      // 先保存当前 S3 配置
-      await fetch('/api/settings/backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          s3Endpoint: elsBackup.s3Endpoint?.value || '',
-          s3Region: elsBackup.s3Region?.value || 'auto',
-          s3Bucket: elsBackup.s3Bucket?.value || '',
-          s3AccessKey: elsBackup.s3AccessKey?.value || '',
-          s3SecretKey: elsBackup.s3SecretKey?.value || ''
-        }),
-        credentials: 'include'
-      });
+      await saveBackupSettings();
       const res = await fetch('/api/settings/backup/test-s3', { method: 'POST', credentials: 'include' });
       const data = await res.json();
       if (res.ok) {
@@ -1464,19 +1416,14 @@ function setupEventListeners() {
         if (elsBackup.testS3Result) { elsBackup.testS3Result.textContent = '❌ ' + data.message; elsBackup.testS3Result.style.color = 'red'; }
       }
     } catch (err) {
-      if (elsBackup.testS3Result) { elsBackup.testS3Result.textContent = '❌ 请求失败'; elsBackup.testS3Result.style.color = 'red'; }
+      if (elsBackup.testS3Result) { elsBackup.testS3Result.textContent = '❌ ' + (err.message || '请求失败'); elsBackup.testS3Result.style.color = 'red'; }
     }
   }
 
   async function testWebhook() {
     if (elsBackup.testWebhookResult) elsBackup.testWebhookResult.textContent = '测试中...';
     try {
-      await fetch('/api/settings/backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ webhookUrl: elsBackup.webhookUrl?.value || '' }),
-        credentials: 'include'
-      });
+      await saveBackupSettings();
       const res = await fetch('/api/settings/backup/test-webhook', { method: 'POST', credentials: 'include' });
       const data = await res.json();
       if (res.ok) {
@@ -1485,28 +1432,16 @@ function setupEventListeners() {
         if (elsBackup.testWebhookResult) { elsBackup.testWebhookResult.textContent = '❌ ' + data.message; elsBackup.testWebhookResult.style.color = 'red'; }
       }
     } catch (err) {
-      if (elsBackup.testWebhookResult) { elsBackup.testWebhookResult.textContent = '❌ 请求失败'; elsBackup.testWebhookResult.style.color = 'red'; }
+      if (elsBackup.testWebhookResult) { elsBackup.testWebhookResult.textContent = '❌ ' + (err.message || '请求失败'); elsBackup.testWebhookResult.style.color = 'red'; }
     }
   }
 
   async function triggerBackup() {
-    // 检查是否配置了任何远程备份目标
-    let hasRemote = false;
-    try {
-      const st = await fetch('/api/backup/status', { credentials: 'include' });
-      const cfg = await st.json();
-      hasRemote = cfg.s3.configured || cfg.webhook.configured;
-    } catch (e) { /* ignore */ }
-
-    if (!hasRemote) {
-      showNotification('未配置 S3 或 Webhook，仅会生成本地备份文件', 'warning');
-    }
-
     try {
       const res = await fetch('/api/backup/auto', { method: 'POST', credentials: 'include' });
       const data = await res.json();
       if (res.ok) {
-        showNotification(hasRemote ? '远程备份已完成' : '本地备份已生成', 'success');
+        showNotification(data.message || '备份完成', 'success');
       } else {
         showNotification('备份失败: ' + (data.message || '未知错误'), 'error');
       }
@@ -1515,7 +1450,6 @@ function setupEventListeners() {
     }
   }
 
-  if (elsBackup.saveBtn) elsBackup.saveBtn.addEventListener('click', saveBackupSettings);
   if (elsBackup.testS3Btn) elsBackup.testS3Btn.addEventListener('click', testS3);
   if (elsBackup.testWebhookBtn) elsBackup.testWebhookBtn.addEventListener('click', testWebhook);
   if (elsBackup.triggerBtn) elsBackup.triggerBtn.addEventListener('click', triggerBackup);
@@ -1530,14 +1464,6 @@ function setupEventListeners() {
     });
   }
 
-  // 打开管理面板时加载备份设置
-  const origAdminPanelBtn = document.getElementById('adminPanelBtn');
-  if (origAdminPanelBtn) {
-    origAdminPanelBtn.addEventListener('click', () => {
-      setTimeout(loadBackupSettings, 300);
-    });
-  }
-
   bindModalInteractions();
 }
 
@@ -1546,7 +1472,9 @@ async function init() {
   // 跟随系统：仅当用户未手动选择主题时，监听系统主题变化
   if (!savedTheme && typeof window !== 'undefined' && window.matchMedia) {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e) => applyTheme(e.matches ? 'dark' : 'light', { persist: false });
+    const handler = (e) => {
+      if (!savedTheme) applyTheme(e.matches ? 'dark' : 'light', { persist: false });
+    };
     if (mq.addEventListener) {
       mq.addEventListener('change', handler);
     } else if (mq.addListener) {
@@ -1590,6 +1518,8 @@ function applyBranding() {
   const defaultLogo = els.brandLogo?.dataset?.default || els.brandLogo?.src || '';
   const displayIcon = state.branding.icon || defaultLogo;
 
+  const uploadLimit = document.getElementById('uploadLimit');
+  if (uploadLimit) uploadLimit.textContent = `最大 ${state.branding.uploadMaxFileBytes / (1024 * 1024)} MiB（${state.branding.uploadMaxFileBytes} 字节）`;
   if (els.brandName) els.brandName.textContent = displayName;
   if (els.brandSubtitle) els.brandSubtitle.textContent = displaySubtitle;
   if (els.brandLogo) {
@@ -1613,41 +1543,13 @@ function applyBranding() {
   }
 }
 
-function applyBrandingFromInputs() {
-  handleBrandingInput();
-  persistSettings();
-  (async () => {
-    try {
-      await saveBrandingToServer();
-      await loadAdminUsers();
-      await loadBrandingFromServer();
-      applyBranding();
-      showNotification('已应用图床个性化设置', 'success');
-    } catch (err) {
-      console.error(err);
-      showNotification(err.message || '应用失败', 'error');
-    }
-  })();
-}
-
 function setSettingsEnabled(isAuth) {
-  const inputs = [
-    els.compressToWebp,
-    els.webpQuality,
-    els.autoWatermark,
-    els.autoCopyLink,
-    els.autoDelete,
-    els.deleteDays,
-    els.brandNameInput,
-    els.brandSubtitleInput,
-    els.brandIconInput,
-    els.allowRegisterInput,
-    els.applyBrandingBtn
-  ].filter(Boolean);
-  const isAdmin = isAdminUser();
-  inputs.forEach((el) => {
-    el.disabled = !(isAuth && isAdmin);
-  });
+  const localInputs = [els.compressToWebp, els.webpQuality, els.autoWatermark,
+    els.watermarkContent, els.autoCopyLink, els.autoDelete, els.deleteDays].filter(Boolean);
+  const adminInputs = [els.brandNameInput, els.brandSubtitleInput, els.brandIconInput,
+    els.allowRegisterInput].filter(Boolean);
+  localInputs.forEach(el => { el.disabled = !isAuth; });
+  adminInputs.forEach(el => { el.disabled = !(isAuth && isAdminUser()); });
 }
 
 async function loadBrandingFromServer() {
@@ -1659,7 +1561,8 @@ async function loadBrandingFromServer() {
     name: data.name || 'Nodeimage',
     subtitle: data.subtitle || 'NodeSeek专用图床·克隆版',
     icon: data.icon || '',
-    registrationEnabled: !!data.registrationEnabled
+    registrationEnabled: !!data.registrationEnabled,
+    uploadMaxFileBytes: Number(data.uploadMaxFileBytes) || 100 * 1024 * 1024
   };
   } catch (err) {
     console.error(err);
@@ -1695,7 +1598,7 @@ async function loadAdminUsers() {
     renderUsersList(data.users || []);
   } catch (err) {
     console.error(err);
-    if (els.usersList) els.usersList.innerHTML = `<div class="text-muted">${err.message}</div>`;
+    if (els.usersList) els.usersList.textContent = err.message;
   }
 }
 

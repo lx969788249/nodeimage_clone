@@ -7,8 +7,10 @@ import { Transform } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import * as tar from 'tar';
 import sqlite3 from 'sqlite3';
+import sharp from 'sharp';
 import { open } from 'sqlite';
 import { httpError } from './safety.js';
+import { normalizeLegacyThumbnailPaths, APPLICATION_SCHEMA, imageFormat } from './storage.js';
 
 export function safeRelative(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 1024 &&
@@ -18,7 +20,8 @@ export function safeRelative(value) {
 const columns = {
   users: ['id', 'username', 'passwordHash', 'apiKey', 'level', 'createdAt'],
   images: ['id', 'userId', 'filename', 'thumbName', 'mime', 'size', 'width', 'height', 'createdAt', 'autoDelete', 'deleteAfterDays'],
-  settings: ['key', 'value']
+  settings: ['key', 'value'],
+  pending_deletions: ['filePath', 'createdAt']
 };
 async function syncDir(dir) {
   const handle = await fsp.open(dir, 'r');
@@ -129,14 +132,16 @@ export class BackupManager {
   async validate(stage) {
     const filename = path.join(stage, 'data/db.sqlite');
     const db = await open({ filename, driver: sqlite3.Database, mode: sqlite3.OPEN_READWRITE });
+    let canonicalRows;
     try {
       await db.exec('PRAGMA trusted_schema=OFF');
       const result = await db.all('PRAGMA integrity_check');
       if (result.length !== 1 || result[0].integrity_check !== 'ok') throw httpError(400, 'INVALID_DATABASE');
       const objects = await db.all("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'");
       if (objects.some(x => !['table', 'index'].includes(x.type)) ||
-        objects.filter(x => x.type === 'table').length !== 3) throw httpError(400, 'INVALID_SCHEMA');
+        objects.some(x => x.type === 'table' && !Object.hasOwn(columns, x.name))) throw httpError(400, 'INVALID_SCHEMA');
       for (const [table, required] of Object.entries(columns)) {
+        if (table === 'pending_deletions' && !objects.some(x => x.type === 'table' && x.name === table)) continue;
         if (!objects.some(x => x.type === 'table' && x.name === table)) throw httpError(400, 'INVALID_SCHEMA');
         const info = await db.all(`PRAGMA table_info(${table})`);
         if (info.some(x => !required.includes(x.name) && !(table === 'users' && x.name === 'sessionVersion')) ||
@@ -159,10 +164,12 @@ export class BackupManager {
         typeof x.apiKey !== 'string' || !x.apiKey || (x.passwordHash != null && typeof x.passwordHash !== 'string') ||
         !Number.isInteger(x.sessionVersion) || x.sessionVersion < 1 || !Number.isFinite(x.level))) throw httpError(400, 'INVALID_USERS');
       if (new Set(users.map(x => x.id)).size !== users.length || new Set(users.map(x => x.username)).size !== users.length || new Set(users.map(x => x.apiKey)).size !== users.length) throw httpError(400, 'DUPLICATE_USERS');
+      await normalizeLegacyThumbnailPaths(db, path.join(stage, 'uploads'));
       const owners = new Set(users.map(x => x.id));
       const files = new Set();
       const canonicalFiles = new Set();
-      for (const image of await db.all('SELECT * FROM images')) {
+      const images = await db.all('SELECT * FROM images');
+      for (const image of images) {
         if (!owners.has(image.userId) || typeof image.id !== 'string' || !image.id || !Number.isFinite(image.createdAt) || !Number.isFinite(image.size) || image.size < 0) throw httpError(400, 'INVALID_IMAGES');
         for (const rel of [image.filename, image.thumbName].filter(x => x != null)) {
           if (!safeRelative(rel) || files.has(rel)) throw httpError(400, 'INVALID_IMAGE_PATH');
@@ -171,6 +178,12 @@ export class BackupManager {
           canonicalFiles.add(canonical);
           files.add(rel);
           await this.regularFile(path.join(stage, 'uploads'), rel);
+          const ext = path.extname(rel).toLowerCase();
+          if (!['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.heif'].includes(ext)) throw httpError(400, 'INVALID_IMAGE_TYPE');
+          const decoded = imageFormat(await sharp(path.join(stage, 'uploads', rel), { limitInputPixels: false }).metadata());
+          const expectedExtensions = decoded.ext === 'jpeg' ? ['.jpg', '.jpeg'] : decoded.ext === 'avif' ? ['.avif', '.heif'] : [`.${decoded.ext}`];
+          if (!expectedExtensions.includes(ext)) throw httpError(400, 'IMAGE_EXTENSION_MISMATCH');
+          if (rel === image.filename) image.mime = decoded.mime;
         }
         if (!image.filename) throw httpError(400, 'MISSING_IMAGE_PATH');
       }
@@ -183,7 +196,8 @@ export class BackupManager {
         }
       };
       await walk(path.join(stage, 'uploads'));
-      for (const setting of await db.all('SELECT * FROM settings')) {
+      const settings = await db.all('SELECT * FROM settings');
+      for (const setting of settings) {
         if (!['branding', 'backup'].includes(setting.key)) throw httpError(400, 'INVALID_SETTINGS');
         const value = JSON.parse(setting.value);
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw httpError(400, 'INVALID_SETTINGS');
@@ -192,11 +206,28 @@ export class BackupManager {
         if (stringKeys.some(key => value[key] !== undefined && (typeof value[key] !== 'string' || value[key].length > 4096))) throw httpError(400, 'INVALID_SETTINGS');
         if (setting.key === 'branding' && value.registrationEnabled !== undefined && typeof value.registrationEnabled !== 'boolean') throw httpError(400, 'INVALID_SETTINGS');
         for (const [key, max] of [['intervalHours', 720], ['keepCount', 365]]) {
-          if (setting.key === 'backup' && value[key] !== undefined && (!Number.isFinite(value[key]) || value[key] < 1 || value[key] > max)) throw httpError(400, 'INVALID_SETTINGS');
+          if (setting.key === 'backup' && value[key] !== undefined && (!Number.isFinite(value[key]) || value[key] < 1 || value[key] > max || (key === 'keepCount' && !Number.isInteger(value[key])))) throw httpError(400, 'INVALID_SETTINGS');
         }
       }
+      canonicalRows = { users, images, settings };
       await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     } finally { await db.close(); }
+    // Never carry archive-controlled CHECK/COLLATE/ON CONFLICT or extra indexes
+    // into the running app. Import only verified records into the canonical schema.
+    const cleanFile = path.join(stage, 'data', 'canonical.sqlite');
+    const clean = await open({ filename: cleanFile, driver: sqlite3.Database });
+    try {
+      await clean.exec(APPLICATION_SCHEMA);
+      await clean.exec('BEGIN IMMEDIATE');
+      for (const [table, rows] of Object.entries(canonicalRows)) {
+        const names = table === 'users' ? [...columns.users.slice(0, 5), 'sessionVersion', 'createdAt'] : columns[table];
+        for (const row of rows) await clean.run(`INSERT INTO ${table} (${names.join(',')}) VALUES (${names.map(() => '?').join(',')})`, ...names.map(name => row[name] ?? null));
+      }
+      // Pending deletion files are deliberately absent from the live image archive.
+      await clean.exec('COMMIT');
+    } finally { await clean.close(); }
+    for (const suffix of ['', '-wal', '-shm']) await fs.remove(filename + suffix);
+    await fs.rename(cleanFile, filename);
   }
   async restore(archive, authorize, afterInstall) {
     const stage = await fs.mkdtemp(path.join(this.dataDir, '.restore-stage-'));

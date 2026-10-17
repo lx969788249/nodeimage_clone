@@ -19,11 +19,11 @@ export async function waitFor(fn, timeout = 5000) {
   }
   throw last || new Error('Condition timed out');
 }
-export async function fixture(t, { root, beforeStart } = {}) {
+export async function fixture(t, { root, beforeStart, env = {} } = {}) {
   root ||= await fs.mkdtemp(path.join(os.tmpdir(), 'nodeimage-test-'));
   await beforeStart?.(root);
   const child = spawn(process.execPath, ['server.js'], { cwd: repo,
-    env: { ...process.env, STORAGE_ROOT: root, HOST: '127.0.0.1', PORT: '0', SESSION_SECRET: 'test-only-isolated-secret', S3_ENDPOINT: '', S3_BUCKET: '', S3_ACCESS_KEY: '', S3_SECRET_KEY: '', BACKUP_WEBHOOK_URL: '', NODE_ENV: 'test', BASE_URL: '', BACKUP_INTERVAL_HOURS: '', BACKUP_KEEP_COUNT: '' },
+    env: { ...process.env, STORAGE_ROOT: root, HOST: '127.0.0.1', PORT: '0', SESSION_SECRET: 'test-only-isolated-secret', S3_ENDPOINT: '', S3_BUCKET: '', S3_ACCESS_KEY: '', S3_SECRET_KEY: '', BACKUP_WEBHOOK_URL: '', NODE_ENV: 'test', BASE_URL: '', BACKUP_INTERVAL_HOURS: '', BACKUP_KEEP_COUNT: '', UPLOAD_MAX_FILE_MIB: '20', ...env },
     stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.on('data', data => { output += data; });

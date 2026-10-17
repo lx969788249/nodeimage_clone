@@ -79,3 +79,18 @@ export class Admission {
     };
   }
 }
+
+// Node timers clamp delays above 2^31-1 to 1ms. Split long supported intervals.
+export function scheduleLongDelay(fn, milliseconds, schedule = setTimeout, cancel = clearTimeout) {
+  let handle;
+  let cancelled = false;
+  const arm = remaining => {
+    const delay = Math.min(remaining, 2_147_483_647);
+    handle = schedule(() => {
+      if (cancelled) return;
+      if (remaining > delay) arm(remaining - delay); else fn();
+    }, delay);
+  };
+  arm(milliseconds);
+  return () => { cancelled = true; cancel(handle); };
+}

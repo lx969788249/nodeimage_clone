@@ -1,20 +1,19 @@
 import express from 'express';
 import session from 'express-session';
-import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import sharp from 'sharp';
 import { nanoid } from 'nanoid';
 import fs from 'fs-extra';
 import path from 'path';
-import mime from 'mime-types';
 import bcrypt from 'bcryptjs';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { fileURLToPath } from 'node:url';
-import { OperationGate, Mutex, Admission, httpError, text } from './safety.js';
+import { OperationGate, Mutex, Admission, httpError, text, scheduleLongDelay } from './safety.js';
 import { BackupManager, safeRelative } from './backup.js';
-import { S3Client, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { Upload } from '@aws-sdk/lib-storage';
+import { acquireStorageLocks, normalizeLegacyThumbnailPaths, APPLICATION_SCHEMA, imageFormat, canonicalPath } from './storage.js';
+import { ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { createS3Client, deliverBackup, rotateLocalBackups } from './backup-delivery.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const storageRoot = path.resolve(process.env.STORAGE_ROOT || __dirname);
@@ -24,36 +23,27 @@ const PORT = process.env.PORT || 7878;
 const CONFIG_BASE_URL = process.env.BASE_URL ? process.env.BASE_URL.replace(/\/$/, '') : '';
 
 // --- 自动备份配置 ---
-let s3Client;
 let _backupTimer = null;
-function clearBackupTimers() {
-  if (_backupTimer) { clearTimeout(_backupTimer); clearInterval(_backupTimer); _backupTimer = null; }
-}
+let backupTimerGeneration = 0;
+function clearBackupTimers() { backupTimerGeneration++; _backupTimer?.(); _backupTimer = null; }
 function startBackupTimers(intervalHours) {
   clearBackupTimers();
-  const ms = intervalHours * 3600000;
-  _backupTimer = setTimeout(() => {
-    runAutoBackup().catch(err => console.error(err.message));
-    _backupTimer = setInterval(() => runAutoBackup().catch(err => console.error(err.message)), ms);
-  }, 300000); // 启动后 5 分钟首次执行
-}
-
-async function getS3Client() {
-  const config = await getBackupConfig();
-  if (!config.s3Endpoint || !config.s3Bucket || !config.s3AccessKey || !config.s3SecretKey) return null;
-  if (s3Client) return s3Client;
-  s3Client = new S3Client({
-    endpoint: config.s3Endpoint,
-    region: config.s3Region,
-    credentials: { accessKeyId: config.s3AccessKey, secretAccessKey: config.s3SecretKey },
-    forcePathStyle: true
-  });
-  return s3Client;
+  const generation = backupTimerGeneration;
+  const schedule = delay => {
+    _backupTimer = scheduleLongDelay(async () => {
+      try { const result = await runAutoBackup(); if (!result.success) console.error(result.message); }
+      catch (err) { console.error('Auto-backup failed:', err.message); }
+      finally { if (generation === backupTimerGeneration) schedule(intervalHours * 3600000); }
+    }, delay);
+  };
+  schedule(300000);
 }
 
 const uploadDir = path.join(storageRoot, 'uploads');
 const dataFile = path.join(storageRoot, 'data', 'db.sqlite');
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // bounded disk input, 20 MiB
+const maxFileMiB = Number(process.env.UPLOAD_MAX_FILE_MIB || 100);
+if (!Number.isInteger(maxFileMiB) || maxFileMiB < 1 || maxFileMiB > 100) throw new Error('UPLOAD_MAX_FILE_MIB must be an integer from 1 to 100');
+const MAX_FILE_SIZE = maxFileMiB * 1024 * 1024; // retain the original 100 MiB default
 const DAILY_UPLOAD_LIMIT = 200;
 
 // --- 简易频率限制 ---
@@ -95,6 +85,16 @@ function guarded(fn) {
     Promise.resolve(fn(req, res, next)).catch(next).finally(() => { req.operationLeases--; release(); });
   };
 }
+function trackedStatic(middleware) {
+  return (req, res, next) => {
+    let release;
+    try { release = gate.enter(!!req.operationLeases); } catch (err) { return next(err); }
+    const done = () => { release(); res.removeListener('finish', done); res.removeListener('close', done); };
+    res.once('finish', done); res.once('close', done);
+    try { middleware(req, res, err => { done(); next(err); }); }
+    catch (err) { done(); next(err); }
+  };
+}
 function route(method, url, ...handlers) { app[method](url, ...handlers.map(guarded)); }
 async function transaction(fn) {
   return writes.run(async () => {
@@ -118,6 +118,9 @@ async function writeAs(req, fn, admin = false) {
     return fn(db, user);
   });
 }
+const releaseStorageLocks = await acquireStorageLocks([path.dirname(dataFile), uploadDir]);
+// This listener also retains the native handles for the lifetime of the process.
+process.once('beforeExit', () => releaseStorageLocks().catch(err => console.error('Storage lock close failed:', err.message)));
 const stagingRoot = path.join(storageRoot, 'data', '.incoming');
 await fs.ensureDir(stagingRoot);
 // Only this process owns this isolated staging directory; stale inputs are never indexed.
@@ -164,18 +167,24 @@ function multipart(field, limits, slots) {
 const receiveImage = multipart('image', { fileSize: MAX_FILE_SIZE, files: 1, fields: 8, fieldSize: 4096, parts: 9 }, admission);
 const receiveBackup = multipart('backup', { fileSize: 1024 ** 3, files: 1, fields: 0, parts: 1 }, restoreAdmission);
 
-function parseBool(val, defaultVal = true) {
-  if (val === undefined || val === null) return defaultVal;
-  if (typeof val === 'boolean') return val;
-  if (typeof val === 'string') return val.toLowerCase() === 'true';
-  return Boolean(val);
+function parseBool(value, defaultValue = true) {
+  if (value === undefined) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (value === 'true' || value === 'false') return value === 'true';
+  throw httpError(400, 'INVALID_BOOLEAN');
+}
+function newPassword(body, key, required = true) {
+  const value = text(body, key, { required, max: 4096, trim: false });
+  if (Buffer.byteLength(value, 'utf8') > 72) throw httpError(400, 'PASSWORD_EXCEEDS_72_BYTES');
+  return value;
 }
 
 await fs.ensureDir(uploadDir);
 await fs.ensureDir(path.dirname(dataFile));
 
 // 在反代场景下使用 X-Forwarded-* 头推断真实协议
-app.set('trust proxy', true);
+const proxySetting = process.env.TRUST_PROXY;
+app.set('trust proxy', proxySetting === undefined || proxySetting === 'true' ? true : proxySetting === 'false' ? false : proxySetting);
 
 app.use((req, res, next) => (gate.maintenance || gate.failed) ? next(httpError(503, 'MAINTENANCE')) : next());
 app.use(express.json({ limit: '5mb' }));
@@ -186,7 +195,6 @@ app.use((req, res, next) => {
   req.body ||= {};
   next();
 });
-app.use(cookieParser());
 app.use(
   session({
     secret: process.env.SESSION_SECRET || 'nodeimage-clone-secret',
@@ -242,7 +250,21 @@ app.use('/uploads/thumbs', guarded(async (req, res, next) => {
   next();
 }));
 
-app.use('/uploads', express.static(uploadDir));
+app.use('/uploads', guarded(async (req, res, next) => {
+  let relative;
+  try { relative = decodeURIComponent(req.path).replace(/^\/+/, ''); }
+  catch { throw httpError(400, 'INVALID_PATH'); }
+  if (!safeRelative(relative)) return res.status(404).end();
+  const db = await getSqlite();
+  const pending = await db.all('SELECT filePath FROM pending_deletions');
+  if (pending.some(item => canonicalPath(item.filePath) === canonicalPath(relative))) return res.status(404).end();
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (path.extname(relative).toLowerCase() === '.avif') res.type('image/avif');
+  if (path.extname(relative).toLowerCase() === '.heif' && (await db.get('SELECT mime FROM images WHERE filename = ?', relative))?.mime === 'image/avif') res.type('image/avif');
+  next();
+}));
+app.use('/uploads', trackedStatic(express.static(uploadDir)));
+app.use('/uploads', (req, res) => res.status(404).end());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const allowedMime = new Set([
@@ -255,52 +277,33 @@ const allowedMime = new Set([
 ]);
 
 let sqliteDb;
+let sqliteOpening;
 async function getSqlite() {
   if (sqliteDb) return sqliteDb;
-  await fs.ensureDir(path.dirname(dataFile));
-  sqliteDb = await open({
-    filename: dataFile,
-    driver: sqlite3.Database
-  });
-  await sqliteDb.exec(`
-    PRAGMA journal_mode=WAL;
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT UNIQUE,
-      passwordHash TEXT,
-      apiKey TEXT,
-      level INTEGER,
-      sessionVersion INTEGER DEFAULT 1,
-      createdAt INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS images (
-      id TEXT PRIMARY KEY,
-      userId TEXT,
-      filename TEXT,
-      thumbName TEXT,
-      mime TEXT,
-      size INTEGER,
-      width INTEGER,
-      height INTEGER,
-      createdAt INTEGER,
-      autoDelete INTEGER,
-      deleteAfterDays INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-  `);
-  // 补齐缺失的 sessionVersion 列（历史数据库）
-  const cols = await sqliteDb.all(`PRAGMA table_info(users)`);
-  const hasSessionVersion = cols.some((c) => c.name === 'sessionVersion');
-  if (!hasSessionVersion) {
-    await sqliteDb.exec(`ALTER TABLE users ADD COLUMN sessionVersion INTEGER DEFAULT 1`);
-  }
-  return sqliteDb;
+  if (sqliteOpening) return sqliteOpening;
+  sqliteOpening = (async () => {
+    await fs.ensureDir(path.dirname(dataFile));
+    const db = await open({
+      filename: dataFile,
+      driver: sqlite3.Database
+    });
+    try {
+    await db.exec(`PRAGMA journal_mode=WAL; ${APPLICATION_SCHEMA}`);
+    // 补齐缺失的 sessionVersion 列（历史数据库）
+    const cols = await db.all(`PRAGMA table_info(users)`);
+    const hasSessionVersion = cols.some((c) => c.name === 'sessionVersion');
+    if (!hasSessionVersion) {
+      await db.exec(`ALTER TABLE users ADD COLUMN sessionVersion INTEGER DEFAULT 1`);
+    }
+    sqliteDb = db;
+    return db;
+    } catch (err) { await db.close().catch(() => {}); throw err; }
+  })();
+  try { return await sqliteOpening; } finally { sqliteOpening = null; }
 }
 
 async function resetSqlite() {
+  if (sqliteOpening) await sqliteOpening;
   if (sqliteDb) {
     const checkpoint = await sqliteDb.get('PRAGMA wal_checkpoint(TRUNCATE)');
     if (checkpoint.busy) throw httpError(503, 'DATABASE_BUSY');
@@ -338,11 +341,22 @@ async function insertImage(db, record) {
   return db.run(`INSERT INTO images (${imageColumns.join(',')}) VALUES (${imageColumns.map(() => '?').join(',')})`,
     ...imageColumns.map(k => k === 'autoDelete' ? Number(!!record[k]) : record[k] ?? null));
 }
-async function removeFiles(images) {
-  for (const img of images) {
-    await fs.remove(path.join(uploadDir, img.filename));
-    if (img.thumbName) await fs.remove(path.join(uploadDir, img.thumbName));
+async function queueFileRemoval(db, images) {
+  for (const image of images) for (const relative of [image.filename, image.thumbName].filter(Boolean)) {
+    if (!safeRelative(relative)) throw new Error('Unsafe stored image path');
+    await db.run('INSERT OR IGNORE INTO pending_deletions (filePath, createdAt) VALUES (?,?)', relative, Date.now());
   }
+}
+async function removeFiles() {
+  await transaction(async db => {
+    for (const item of await db.all('SELECT filePath FROM pending_deletions')) {
+      try {
+        if (!safeRelative(item.filePath)) throw new Error('Unsafe pending image path');
+        await fs.remove(path.join(uploadDir, item.filePath));
+        await db.run('DELETE FROM pending_deletions WHERE filePath = ?', item.filePath);
+      } catch (err) { console.warn('Deferred file cleanup:', err.code || err.message); }
+    }
+  });
 }
 
 function getBaseUrl(req) {
@@ -395,25 +409,27 @@ async function requireAuth(req, res, next) {
 }
 async function attachUser(req, res, next) { req.user = await getUser(req); next(); }
 
-function createWatermarkSvg(text, width = 800) {
-  const fontSize = Math.max(16, Math.round(width / 25));
+function createWatermarkSvg(text, width = 800, height = 2400) {
+  const fontSize = Math.max(1, Math.min(Math.max(16, Math.round(width / 25)), Math.floor(height / 3) || 1));
   const padding = Math.round(fontSize * 0.6);
-  return `\n    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${fontSize * 3}">\n      <style>\n        .watermark {\n          fill: rgba(255,255,255,0.7);\n          font-size: ${fontSize}px;\n          font-family: 'Helvetica Neue', Arial, sans-serif;\n          font-weight: 600;\n          paint-order: stroke;\n          stroke: rgba(0,0,0,0.35);\n          stroke-width: 2px;\n        }\n      </style>\n      <text x="${width - padding}" y="${fontSize + padding}" text-anchor="end" class="watermark">${text.replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;'}[c]))}</text>\n    </svg>\n  `;
+  return `\n    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${Math.max(1, Math.min(height, fontSize * 3))}">\n      <style>\n        .watermark {\n          fill: rgba(255,255,255,0.7);\n          font-size: ${fontSize}px;\n          font-family: 'Helvetica Neue', Arial, sans-serif;\n          font-weight: 600;\n          paint-order: stroke;\n          stroke: rgba(0,0,0,0.35);\n          stroke-width: 2px;\n        }\n      </style>\n      <text x="${width - padding}" y="${fontSize + padding}" text-anchor="end" class="watermark">${text.replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&apos;'}[c]))}</text>\n    </svg>\n  `;
 }
 
 async function processImage(buffer, options) {
   const { compressToWebp, webpQuality, watermarkText } = options;
-  const base = sharp(buffer, { limitInputPixels: 40_000_000 }).rotate();
+  const base = sharp(buffer, { animated: true, limitInputPixels: 40_000_000 }).rotate();
   const meta = await base.metadata();
+  const decodedFormat = imageFormat(meta);
 
   let pipeline = base;
   if (watermarkText) {
-    const svg = createWatermarkSvg(watermarkText, meta.width || 800);
+    const svg = createWatermarkSvg(watermarkText, meta.autoOrient?.width || meta.width || 800, meta.pageHeight || meta.autoOrient?.height || meta.height || 2400);
     pipeline = pipeline.composite([{ input: Buffer.from(svg), gravity: 'southeast' }]);
   }
 
-  let outputMime = meta.format ? mime.lookup(meta.format) || 'application/octet-stream' : 'application/octet-stream';
-  let ext = meta.format || 'png';
+  let outputMime = decodedFormat.mime;
+  let ext = decodedFormat.ext;
+  if (ext === 'avif') pipeline = pipeline.avif();
   if (compressToWebp && meta.format !== 'gif' && meta.format !== 'svg') {
     pipeline = pipeline.webp({ quality: webpQuality || 90 });
     outputMime = 'image/webp';
@@ -444,7 +460,7 @@ route('get', '/api/user/status', attachUser, async (req, res) => {
 
 route('post', '/api/auth/login', rateLimit({ windowMs: 60000, max: 10 }), async (req, res) => {
   const username = text(req.body, 'username', { required: true, max: 30 });
-  const password = text(req.body, 'password', { required: true, max: 72, trim: false });
+  const password = text(req.body, 'password', { required: true, max: 4096, trim: false });
   const db = await getSqlite();
   let user = await db.get('SELECT * FROM users WHERE username = ?', username);
   if (!user) throw httpError(401, '用户名或密码错误');
@@ -467,7 +483,7 @@ route('post', '/api/auth/logout', async (req, res) => {
 });
 route('post', '/api/auth/register', async (req, res) => {
   const username = text(req.body, 'username', { required: true, max: 30 });
-  const password = text(req.body, 'password', { required: true, max: 72, trim: false });
+  const password = newPassword(req.body, 'password');
   if (!(await getBranding()).registrationEnabled) throw httpError(403, '注册已关闭');
   const passwordHash = await bcrypt.hash(password, 10);
   const user = { id: nanoid(12), apiKey: generateApiKey() };
@@ -489,7 +505,7 @@ route('get', '/api/admin/users', requireAuth, requireAdmin, async (req, res) => 
 });
 route('post', '/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
   const username = text(req.body, 'username', { required: true, max: 30 });
-  const password = text(req.body, 'password', { max: 72, trim: false });
+  const password = newPassword(req.body, 'password', false);
   const hash = password ? await bcrypt.hash(password, 10) : null;
   await writeAs(req, async db => {
     const target = await db.get('SELECT * FROM users WHERE id = ?', req.params.id);
@@ -506,6 +522,7 @@ route('delete', '/api/admin/users/:id', requireAuth, requireAdmin, async (req, r
   const removedImages = await writeAs(req, async db => {
     if (!await db.get('SELECT id FROM users WHERE id = ?', id)) throw httpError(404, '用户不存在');
     const images = await db.all('SELECT * FROM images WHERE userId = ?', id);
+    await queueFileRemoval(db, images);
     await db.run('DELETE FROM images WHERE userId = ?', id);
     await db.run('DELETE FROM users WHERE id = ?', id);
     return images;
@@ -514,12 +531,12 @@ route('delete', '/api/admin/users/:id', requireAuth, requireAdmin, async (req, r
   res.json({ message: '已删除用户' });
 });
 async function handleCredentialUpdate(req, res) {
-  const oldPassword = text(req.body, 'oldPassword', { required: true, max: 72, trim: false });
-  const newPassword = text(req.body, 'newPassword', { required: true, max: 72, trim: false });
+  const oldPassword = text(req.body, 'oldPassword', { required: true, max: 4096, trim: false });
+  const nextPassword = newPassword(req.body, 'newPassword');
   const username = text(req.body, 'newUsername', { required: true, max: 30 });
   const originalHash = req.user.passwordHash;
   if (!originalHash || !await bcrypt.compare(oldPassword, originalHash)) throw httpError(401, '原密码错误');
-  const hash = await bcrypt.hash(newPassword, 10);
+  const hash = await bcrypt.hash(nextPassword, 10);
   await writeAs(req, async (db, user) => {
     if (user.passwordHash !== originalHash) throw httpError(409, 'CREDENTIALS_CHANGED');
     await db.run('UPDATE users SET username = ?, passwordHash = ?, sessionVersion = COALESCE(sessionVersion,1) + 1 WHERE id = ?', username, hash, user.id);
@@ -530,7 +547,7 @@ async function handleCredentialUpdate(req, res) {
 route('post', '/api/user/password', requireAuth, handleCredentialUpdate);
 route('post', '/api/user/credentials', requireAuth, handleCredentialUpdate);
 route('get', '/api/user/api-key', requireAuth, async (req, res) => { res.json({ apiKey: req.user.apiKey }); });
-route('get', '/api/settings/branding', async (req, res) => { res.json(await getBranding()); });
+route('get', '/api/settings/branding', async (req, res) => { res.json({ ...await getBranding(), uploadMaxFileBytes: MAX_FILE_SIZE }); });
 route('post', '/api/settings/branding', requireAuth, requireAdmin, async (req, res) => {
   const branding = { name: text(req.body, 'name') || 'Nodeimage', subtitle: text(req.body, 'subtitle'),
     icon: text(req.body, 'icon', { max: 4096 }), registrationEnabled: parseBool(req.body.registrationEnabled, false) };
@@ -555,21 +572,22 @@ const BACKUP_DEFAULTS = {
   webhookUrl: ''
 };
 
+function backupNumber(value, fallback, max, integer = false) {
+  const number = value === undefined || value === '' ? fallback : Number(value);
+  if (!Number.isFinite(number) || number < 1 || number > max || (integer && !Number.isInteger(number))) throw httpError(400, 'INVALID_BACKUP_SCHEDULE');
+  return number;
+}
 async function getBackupConfig() {
   const db = await getSqlite();
   const row = await db.get('SELECT value FROM settings WHERE key = ?', 'backup');
   const saved = row ? JSON.parse(row.value) : {};
-  // 环境变量优先，数据库值作为默认
-  return {
-    intervalHours: parseInt(process.env.BACKUP_INTERVAL_HOURS) || saved.intervalHours || BACKUP_DEFAULTS.intervalHours,
-    keepCount: parseInt(process.env.BACKUP_KEEP_COUNT) || saved.keepCount || BACKUP_DEFAULTS.keepCount,
-    s3Endpoint: process.env.S3_ENDPOINT || saved.s3Endpoint || BACKUP_DEFAULTS.s3Endpoint,
-    s3Region: process.env.S3_REGION || saved.s3Region || BACKUP_DEFAULTS.s3Region,
-    s3Bucket: process.env.S3_BUCKET || saved.s3Bucket || BACKUP_DEFAULTS.s3Bucket,
-    s3AccessKey: process.env.S3_ACCESS_KEY || saved.s3AccessKey || BACKUP_DEFAULTS.s3AccessKey,
-    s3SecretKey: process.env.S3_SECRET_KEY || saved.s3SecretKey || BACKUP_DEFAULTS.s3SecretKey,
-    webhookUrl: process.env.BACKUP_WEBHOOK_URL || saved.webhookUrl || BACKUP_DEFAULTS.webhookUrl
-  };
+  const config = {};
+  for (const key of Object.keys(BACKUP_DEFAULTS)) config[key] = saved[key] ?? BACKUP_DEFAULTS[key];
+  const envNames = { s3Endpoint: 'S3_ENDPOINT', s3Region: 'S3_REGION', s3Bucket: 'S3_BUCKET', s3AccessKey: 'S3_ACCESS_KEY', s3SecretKey: 'S3_SECRET_KEY', webhookUrl: 'BACKUP_WEBHOOK_URL' };
+  for (const [key, name] of Object.entries(envNames)) if (process.env[name]) config[key] = process.env[name];
+  config.intervalHours = backupNumber(process.env.BACKUP_INTERVAL_HOURS || config.intervalHours, 24, 720);
+  config.keepCount = backupNumber(process.env.BACKUP_KEEP_COUNT || config.keepCount, 7, 365, true);
+  return config;
 }
 
 route('get', '/api/settings/backup', requireAuth, requireAdmin, async (req, res) => {
@@ -584,8 +602,8 @@ route('post', '/api/settings/backup', requireAuth, requireAdmin, async (req, res
   const updated = await writeAs(req, async db => {
     const current = await getBackupConfig();
     const updated = {
-      intervalHours: Math.max(1, Math.min(720, Number(req.body.intervalHours) || current.intervalHours)),
-      keepCount: Math.max(1, Math.min(365, Number(req.body.keepCount) || current.keepCount)),
+      intervalHours: backupNumber(req.body.intervalHours, current.intervalHours, 720),
+      keepCount: backupNumber(req.body.keepCount, current.keepCount, 365, true),
       s3Endpoint: req.body.s3Endpoint !== undefined ? String(req.body.s3Endpoint).trim() : current.s3Endpoint,
       s3Region: req.body.s3Region !== undefined ? String(req.body.s3Region).trim() : current.s3Region,
       s3Bucket: req.body.s3Bucket !== undefined ? String(req.body.s3Bucket).trim() : current.s3Bucket,
@@ -593,14 +611,16 @@ route('post', '/api/settings/backup', requireAuth, requireAdmin, async (req, res
       s3SecretKey: req.body.s3SecretKey !== undefined ? String(req.body.s3SecretKey).trim() : current.s3SecretKey,
       webhookUrl: req.body.webhookUrl !== undefined ? String(req.body.webhookUrl).trim() : current.webhookUrl
     };
+    for (const key of ['s3AccessKey', 's3SecretKey']) {
+      if (!updated[key] || updated[key].startsWith('***')) updated[key] = current[key];
+    }
     await db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)', 'backup', JSON.stringify(updated));
     return updated;
   }, true);
   // 重置 S3 连接缓存
-  s3Client = null;
   // 重置备份定时器
   clearBackupTimers();
-  startBackupTimers(updated.intervalHours);
+  startBackupTimers((await getBackupConfig()).intervalHours);
   // 脱敏返回
   const result = { ...updated };
   result.s3AccessKey = result.s3AccessKey ? '***' + result.s3AccessKey.slice(-4) : '';
@@ -615,13 +635,9 @@ route('post', '/api/settings/backup/test-s3', requireAuth, requireAdmin, async (
     return res.status(400).json({ message: 'S3 配置不完整' });
   }
   try {
-    const testClient = new S3Client({
-      endpoint: config.s3Endpoint,
-      region: config.s3Region,
-      credentials: { accessKeyId: config.s3AccessKey, secretAccessKey: config.s3SecretKey },
-      forcePathStyle: true
-    });
-    await testClient.send(new ListObjectsV2Command({ Bucket: config.s3Bucket, MaxKeys: 1 }));
+    const testClient = createS3Client(config);
+    try { await testClient.send(new ListObjectsV2Command({ Bucket: config.s3Bucket, MaxKeys: 1 })); }
+    finally { testClient.destroy(); }
     res.json({ message: 'S3 连接成功' });
   } catch (err) {
     res.status(400).json({ message: 'S3 连接失败', error: err.message });
@@ -636,8 +652,10 @@ route('post', '/api/settings/backup/test-webhook', requireAuth, requireAdmin, as
     const res2 = await fetch(config.webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain', 'X-Backup-Test': 'true' },
+      signal: AbortSignal.timeout(10000),
       body: 'nodeimage backup test ping'
     });
+    await res2.body?.cancel();
     if (!res2.ok) throw new Error(`HTTP ${res2.status}`);
     res.json({ message: 'Webhook 连接成功' });
   } catch (err) {
@@ -655,13 +673,17 @@ for (const entry of await fs.readdir(uploadDir)) {
   if (entry.startsWith('.restore-stage-')) await fs.remove(path.join(uploadDir, entry));
 }
 await ensureDefaultUserSql();
-// Historical thumbnails sometimes stored a bare basename although the file was
-// already in thumbs/. Keep originals in place and repair only that relative path.
-for (const image of await (await getSqlite()).all('SELECT id, thumbName FROM images WHERE thumbName IS NOT NULL')) {
-  if (!image.thumbName.includes('/') && await fs.pathExists(path.join(uploadDir, 'thumbs', image.thumbName))) {
-    await (await getSqlite()).run('UPDATE images SET thumbName = ? WHERE id = ?', `thumbs/${image.thumbName}`, image.id);
-  }
+await normalizeLegacyThumbnailPaths(await getSqlite(), uploadDir);
+// Historical AVIF records used sharp's 'heif' format and octet-stream MIME.
+// Confirm the actual codec before correcting metadata; keep existing URLs intact.
+for (const image of await (await getSqlite()).all("SELECT id, filename FROM images WHERE lower(filename) LIKE '%.heif'")) {
+  if (!safeRelative(image.filename)) continue;
+  try {
+    const format = imageFormat(await sharp(path.join(uploadDir, image.filename), { limitInputPixels: false }).metadata());
+    if (format.ext === 'avif') await (await getSqlite()).run('UPDATE images SET mime = ? WHERE id = ?', format.mime, image.id);
+  } catch (err) { console.warn('Legacy HEIF inspection skipped:', err.code || err.message); }
 }
+await removeFiles();
 
 route('get', '/api/backup', requireAuth, requireAdmin, maintenance(async (req, res) => {
   const outPath = await backups.create(async () => { await liveUser(req); });
@@ -679,7 +701,6 @@ route('post', '/api/backup/restore', requireAuth, requireAdmin, receiveBackup, m
     }, async () => {
       await new Promise((resolve, reject) => req.sessionStore.clear(err => err ? reject(err) : resolve()));
       req.session.destroy(() => {});
-      s3Client = null;
     });
     startBackupTimers((await getBackupConfig()).intervalHours);
     res.json({ message: '备份已恢复，原数据已保留在回滚目录' });
@@ -741,8 +762,11 @@ route('post', '/api/upload', requireAuth, receiveImage, async (req, res) => {
   }
 });
 async function listImages(req, res, v1 = false) {
-  const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
-  const limit = Math.min(v1 ? 100 : 60, Math.max(1, Math.floor(Number(req.query.limit) || (v1 ? 50 : 20))));
+  const requestedPage = Number(req.query.page ?? 1);
+  const requestedLimit = Number(req.query.limit ?? (v1 ? 50 : 20));
+  if (!Number.isFinite(requestedPage) || !Number.isFinite(requestedLimit)) throw httpError(400, 'INVALID_PAGINATION');
+  const page = Math.min(1_000_000, Math.max(1, Math.floor(requestedPage) || 1));
+  const limit = Math.min(v1 ? 100 : 60, Math.max(1, Math.floor(requestedLimit) || (v1 ? 50 : 20)));
   const db = await getSqlite();
   const { total } = await db.get('SELECT count(*) AS total FROM images WHERE userId = ?', req.user.id);
   const images = await db.all('SELECT * FROM images WHERE userId = ? ORDER BY createdAt DESC LIMIT ? OFFSET ?', req.user.id, limit, (page - 1) * limit);
@@ -754,6 +778,7 @@ route('get', '/api/v1/list', requireAuth, async (req, res) => { await listImages
 async function deleteImages(req, ids) {
   const removed = await writeAs(req, async (db, user) => {
     const images = await db.all(`SELECT * FROM images WHERE userId = ? AND id IN (${ids.map(() => '?').join(',')})`, user.id, ...ids);
+    await queueFileRemoval(db, images);
     for (const img of images) await db.run('DELETE FROM images WHERE id = ? AND userId = ?', img.id, user.id);
     return images;
   });
@@ -773,8 +798,8 @@ route('delete', '/api/v1/delete/:id', requireAuth, async (req, res) => {
 
 // --- 备份 API ---
 route('post', '/api/backup/auto', requireAuth, requireAdmin, maintenance(async (req, res) => {
-  await runAutoBackup(req);
-  res.json({ message: '备份完成' });
+  const result = await runAutoBackup(req);
+  res.status(result.success ? 200 : 502).json(result);
 }));
 
 route('get', '/api/backup/status', requireAuth, requireAdmin, async (req, res) => {
@@ -787,6 +812,7 @@ route('get', '/api/backup/status', requireAuth, requireAdmin, async (req, res) =
   });
 });
 
+app.use('/api', (req, res) => res.status(404).json({ message: 'NOT_FOUND' }));
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -798,6 +824,7 @@ async function cleanupExpiredImages() {
     release = gate.enter();
     const removed = await transaction(async db => {
       const images = await db.all('SELECT * FROM images WHERE autoDelete = 1 AND deleteAfterDays IS NOT NULL AND createdAt + deleteAfterDays * 86400000 <= ?', Date.now());
+      await queueFileRemoval(db, images);
       for (const img of images) await db.run('DELETE FROM images WHERE id = ?', img.id);
       return images;
     });
@@ -813,61 +840,6 @@ function backupStamp() {
   return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}-${d.getTime()}`;
 }
 
-async function uploadBackupToS3(filePath, stamp) {
-  const client = await getS3Client();
-  if (!client) return { type: 's3', skipped: true, reason: 'S3 未配置' };
-  const config = await getBackupConfig();
-  const stream = await fs.createReadStream(filePath);
-  const upload = new Upload({
-    client,
-    params: {
-      Bucket: config.s3Bucket,
-      Key: `nodeimage/backup-${stamp}.tar.gz`,
-      Body: stream,
-      ContentType: 'application/gzip'
-    }
-  });
-  await upload.done();
-  return { type: 's3', success: true };
-}
-
-async function uploadBackupToWebhook(filePath, stamp) {
-  const config = await getBackupConfig();
-  if (!config.webhookUrl) return { type: 'webhook', skipped: true, reason: 'Webhook 未配置' };
-  const content = await fs.readFile(filePath);
-  const res = await fetch(config.webhookUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/gzip',
-      'X-Backup-Filename': `nodeimage-backup-${stamp}.tar.gz`,
-      'X-Backup-Timestamp': stamp
-    },
-    body: content
-  });
-  if (!res.ok) throw new Error(`Webhook 返回 ${res.status}`);
-  return { type: 'webhook', success: true };
-}
-
-async function rotateS3Backups() {
-  const client = await getS3Client();
-  if (!client) return;
-  const config = await getBackupConfig();
-  try {
-    const list = await client.send(new ListObjectsV2Command({
-      Bucket: config.s3Bucket,
-      Prefix: 'nodeimage/backup-'
-    }));
-    const items = (list.Contents || []).sort((a, b) => (b.LastModified || 0) - (a.LastModified || 0));
-    if (items.length <= config.keepCount) return;
-    for (const item of items.slice(config.keepCount)) {
-      await client.send(new DeleteObjectCommand({ Bucket: config.s3Bucket, Key: item.Key }));
-      console.log(`S3 backup deleted: ${item.Key}`);
-    }
-  } catch (err) {
-    console.error('S3 rotate error:', err.message);
-  }
-}
-
 let autoBackupRunning = false;
 async function runAutoBackup(req) {
   if (autoBackupRunning) throw httpError(409, 'BACKUP_BUSY');
@@ -877,41 +849,16 @@ async function runAutoBackup(req) {
   finally { release?.(); autoBackupRunning = false; }
 }
 async function performAutoBackup(req, holdData) {
-  console.log('Auto-backup starting...');
-  const stamp = backupStamp();
-  let filePath;
-  try {
-    filePath = await backups.create(req ? async () => { await liveUser(req); } : undefined);
-    // Cover configuration reads and rotation after releasing the snapshot barrier.
-    holdData();
-    const [s3Result, webhookResult] = await Promise.allSettled([
-      uploadBackupToS3(filePath, stamp),
-      uploadBackupToWebhook(filePath, stamp)
-    ]);
-    if (s3Result.status === 'fulfilled') console.log('Backup S3:', JSON.stringify(s3Result.value));
-    else console.error('Backup S3 failed:', s3Result.reason?.message);
-    if (webhookResult.status === 'fulfilled') console.log('Backup Webhook:', JSON.stringify(webhookResult.value));
-    else console.error('Backup Webhook failed:', webhookResult.reason?.message);
-    await rotateS3Backups();
-  } catch (err) {
-    console.error('Auto-backup failed:', err.message);
-    throw err;
-  }
-  // 本地轮转：保留最近 N 个备份
-  try {
-    const config = await getBackupConfig();
-    const dir = path.join(storageRoot, 'data');
-    const files = (await fs.readdir(dir))
-      .filter((f) => f.startsWith('backup-') && f.endsWith('.tar.gz'))
-      .map((f) => ({ name: f, path: path.join(dir, f) }));
-    files.sort((a, b) => b.name.localeCompare(a.name));
-    for (const f of files.slice(config.keepCount)) {
-      await fs.remove(f.path);
-      console.log(`Local backup deleted: ${f.name}`);
-    }
-  } catch (err) {
-    console.error('Local backup rotate error:', err.message);
-  }
+  const filePath = await backups.create(req ? async () => { await liveUser(req); } : undefined);
+  holdData();
+  // One effective configuration per run: client, bucket, delivery and rotation agree.
+  const config = await getBackupConfig();
+  const results = await deliverBackup(filePath, backupStamp(), config);
+  await rotateLocalBackups(path.dirname(dataFile), config.keepCount);
+  const failed = results.some(result => result.success === false);
+  const configured = results.some(result => !result.skipped);
+  return { success: !failed, message: failed ? '本地备份已生成，部分远端备份失败' :
+    configured ? '本地及已配置远端备份完成' : '本地备份完成（未配置远端目标）', results };
 }
 
 // 定时自动备份

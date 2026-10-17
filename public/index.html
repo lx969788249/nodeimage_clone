@@ -23,7 +23,6 @@
       <div class="nav-right">
         <div class="nav-toggle-container">
           <button class="tailwind-btn" id="backBtn" style="display: none;">返回</button>
-          <button class="tailwind-btn" id="backBtn2" style="display: none;">返回</button>
           <button class="tailwind-btn" id="apiBtn">API</button>
           <button class="tailwind-btn" id="historyBtn">历史 <span id="totalImages">0</span></button>
           <button class="tailwind-btn" id="settingsNavBtn">设置</button>
@@ -42,7 +41,6 @@
                 <button class="tailwind-btn user-menu-item logout-btn" id="logoutBtn">注销</button>
               </div>
             </div>
-            <button class="tailwind-btn" id="adminPanelBtn" style="display:none;">管理</button>
           </div>
           <button class="auth-btn" id="openAuthBtn">登录</button>
         </div>
@@ -74,7 +72,7 @@
                 </div>
               </div>
               <h3>点击或拖拽上传图片</h3>
-              <p>支持 JPG、JPEG、PNG、GIF、WebP、AVIF 等格式，最大 100MB</p>
+              <p>支持 JPG、JPEG、PNG、GIF、WebP、AVIF 等格式，<span id="uploadLimit">最大 100 MiB（104857600 字节）</span></p>
               <p class="paste-hint">💡 你也可以直接 <kbd>Ctrl+V</kbd> 粘贴剪贴板中的图片</p>
               <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp,image/avif" multiple style="display:none;">
             </div>
@@ -100,14 +98,6 @@
               </svg>
               历史上传
             </h3>
-            <div class="copy-all-bar" id="historyCopyAllBar" style="display: none;">
-              <div class="copy-all-group">
-                <button class="copy-pill pill-direct" id="historyCopyAllDirectBtn">复制全部直链</button>
-                <button class="copy-pill pill-html" id="historyCopyAllHtmlBtn">复制全部 HTML</button>
-                <button class="copy-pill pill-md" id="historyCopyAllMdBtn">复制全部 Markdown</button>
-                <button class="copy-pill pill-bb" id="historyCopyAllBbBtn">复制全部 BB</button>
-              </div>
-            </div>
           </div>
           <div class="batch-actions-bar" id="batchActionsBar" style="display: none;">
             <div class="batch-actions-content">
@@ -292,7 +282,7 @@
                 <label class="checkbox-container">
                   <input type="checkbox" id="autoCopyLink" name="autoCopyLink">
                   <span class="checkmark"></span>
-                  <div class="setting-label"><span class="setting-title">上传成功自动复制链接</span><span class="setting-desc">图片上传后根据选择的格式自动复制到剪贴板</span></div>
+                  <div class="setting-label"><span class="setting-title">上传成功自动复制链接</span><span class="setting-desc">图片上传后自动复制直链到剪贴板</span></div>
                 </label>
               </div>
               <div class="setting-row">
@@ -326,7 +316,7 @@
                 <label class="checkbox-container">
                   <input type="checkbox" id="allowRegisterInput">
                   <span class="checkmark"></span>
-                  <div class="setting-label"><span class="setting-title">允许用户注册</span><span class="setting-desc">默认关闭，仅管理员可创建账号</span></div>
+                  <div class="setting-label"><span class="setting-title">允许用户注册</span><span class="setting-desc">默认关闭，开启后允许访客注册</span></div>
                 </label>
               </div>
             </section>
