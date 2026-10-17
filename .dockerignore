@@ -1,6 +1,7 @@
 node_modules
 uploads
-data/*.json
+data
+test
 npm-debug.log
 .git
 Dockerfile
