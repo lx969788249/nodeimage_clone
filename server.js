@@ -10,12 +10,13 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { fileURLToPath } from 'node:url';
 import { OperationGate, Mutex, Admission, LoginGuard, httpError, text, scheduleLongDelay } from './lib/safety.js';
-import { proxySetting, baseUrl, requestContext, ReleaseUpdates } from './lib/network.js';
+import { proxySetting, baseUrl, requestContext, ReleaseUpdates, installedVersion } from './lib/network.js';
 import { BackupManager, safeRelative, createS3Client, deliverBackup, rotateLocalBackups } from './lib/backup.js';
 import { acquireStorageLocks, normalizeLegacyThumbnailPaths, APPLICATION_SCHEMA, imageFormat, canonicalPath } from './lib/storage.js';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const currentVersion = installedVersion((await fs.readJson(path.join(__dirname, 'package.json'))).version, process.env.APP_VERSION);
 const storageRoot = path.resolve(process.env.STORAGE_ROOT || __dirname);
 const app = express();
 
@@ -486,7 +487,7 @@ function requireAdmin(req, res, next) {
   throw httpError(403, '仅管理员可操作');
 }
 const updates = new ReleaseUpdates({
-  version: process.env.APP_VERSION, revision: process.env.APP_REVISION,
+  version: currentVersion, revision: process.env.APP_REVISION,
   read: async () => {
     const row = await (await getSqlite()).get("SELECT value FROM settings WHERE key = 'releaseUpdates'");
     try { return row ? JSON.parse(row.value) : {}; } catch { return {}; }
