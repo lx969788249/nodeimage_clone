@@ -13,6 +13,9 @@ COPY lib ./lib
 COPY server.js ./
 RUN mkdir -p uploads data
 
+ARG APP_VERSION=""
+ARG APP_REVISION=""
+ENV APP_VERSION=$APP_VERSION APP_REVISION=$APP_REVISION
 ENV PORT=7878
 EXPOSE 7878
 VOLUME ["/app/uploads", "/app/data"]

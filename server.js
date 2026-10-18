@@ -10,7 +10,7 @@ import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { fileURLToPath } from 'node:url';
 import { OperationGate, Mutex, Admission, LoginGuard, httpError, text, scheduleLongDelay } from './lib/safety.js';
-import { proxySetting, baseUrl, requestContext } from './lib/network.js';
+import { proxySetting, baseUrl, requestContext, ReleaseUpdates } from './lib/network.js';
 import { BackupManager, safeRelative, createS3Client, deliverBackup, rotateLocalBackups } from './lib/backup.js';
 import { acquireStorageLocks, normalizeLegacyThumbnailPaths, APPLICATION_SCHEMA, imageFormat, canonicalPath } from './lib/storage.js';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
@@ -485,6 +485,49 @@ function requireAdmin(req, res, next) {
   if (req.user && (req.user.id === 'admin' || req.user.level >= 9)) return next();
   throw httpError(403, '仅管理员可操作');
 }
+const updates = new ReleaseUpdates({
+  version: process.env.APP_VERSION, revision: process.env.APP_REVISION,
+  read: async () => {
+    const row = await (await getSqlite()).get("SELECT value FROM settings WHERE key = 'releaseUpdates'");
+    try { return row ? JSON.parse(row.value) : {}; } catch { return {}; }
+  },
+  change: fn => transaction(async db => {
+    const row = await db.get("SELECT value FROM settings WHERE key = 'releaseUpdates'");
+    let state; try { state = row ? JSON.parse(row.value) : {}; } catch { state = {}; }
+    state = await fn(state, db);
+    await db.run("INSERT INTO settings (key,value) VALUES ('releaseUpdates',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", JSON.stringify(state));
+    return state;
+  }),
+  run: async fn => { const release = gate.enter(); try { return await fn(); } finally { release(); } }
+});
+route('get', '/api/app/version', requireAuth, async (req, res) => {
+  const admin = req.user.id === 'admin' || req.user.level >= 9;
+  let info = await updates.snapshot();
+  if (admin && Date.now() >= info.nextCheckAt) {
+    void updates.check().catch(() => {});
+    info = { ...info, checking: true };
+  }
+  res.set('Cache-Control', 'no-store');
+  res.json(admin ? info : { projectUrl: info.projectUrl, currentVersion: info.currentVersion, revision: info.revision });
+});
+route('post', '/api/app/update-check', requireAuth, requireAdmin, async (req, res) => {
+  const info = await updates.snapshot();
+  if (Date.now() < info.manualAvailableAt) {
+    res.set('Retry-After', String(Math.ceil((info.manualAvailableAt - Date.now()) / 1000)));
+    return res.status(429).json(info);
+  }
+  void updates.check(true).catch(() => {});
+  res.status(202).json({ ...info, checking: true });
+});
+route('post', '/api/app/update-notice', requireAuth, requireAdmin, async (req, res) => {
+  // Revalidate credentials/role before changing this instance's notice preference.
+  res.json(await updates.notice(text(req.body, 'action', { required: true, max: 10 }), text(req.body, 'version', { required: true, max: 100 }), async db => {
+    req.user = await liveUser(req, db); requireAdmin(req, res, () => {});
+  }));
+});
+setTimeout(() => { void updates.check().catch(() => {}); }, 30000).unref();
+setInterval(() => { void updates.check().catch(() => {}); }, 3600000).unref();
+
 route('get', '/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
   const db = await getSqlite();
   res.json({ users: await db.all('SELECT id, username, level, createdAt FROM users') });

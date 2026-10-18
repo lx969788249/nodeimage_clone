@@ -57,6 +57,12 @@
   </nav>
 
   <div class="container">
+    <aside id="updateNotice" class="update-notice" role="status" aria-live="polite" style="display:none;">
+      <span id="updateNoticeText"></span>
+      <a id="updateNoticeLink" href="https://github.com/lx969788249/nodeimage_clone/releases" target="_blank" rel="noopener noreferrer">查看发布</a>
+      <button id="ignoreUpdateNotice" type="button" class="tailwind-btn">忽略此版本</button>
+      <button id="dismissUpdateNotice" type="button" class="tailwind-btn" aria-label="关闭更新提示">关闭</button>
+    </aside>
     <main class="main" id="mainView">
       <div class="flip-card">
         <div class="flip-card-inner">
@@ -240,6 +246,21 @@
             <p>配置图片上传偏好、图床品牌和管理功能</p>
           </div>
           <div class="settings-sections">
+            <section class="settings-section" id="versionSection">
+              <h3>关于与版本</h3>
+              <div class="setting-row"><span>当前版本</span><span id="installedVersion">读取中…</span></div>
+              <div class="setting-row"><span>GitHub 项目</span><a href="https://github.com/lx969788249/nodeimage_clone" target="_blank" rel="noopener noreferrer">lx969788249/nodeimage_clone</a></div>
+              <div id="updateControls" style="display:none;">
+                <p id="updateStatus" class="text-muted"></p>
+                <p id="updateCheckedAt" class="text-muted"></p>
+                <div class="version-actions">
+                  <button id="checkUpdatesBtn" type="button" class="tailwind-btn">检查更新</button>
+                  <a id="releaseLink" href="https://github.com/lx969788249/nodeimage_clone/releases" target="_blank" rel="noopener noreferrer" style="display:none;">查看发布</a>
+                  <button id="ignoreUpdateBtn" type="button" class="tailwind-btn" style="display:none;">忽略此版本</button>
+                </div>
+                <p class="text-muted">仅管理员收到站内提示；每个版本在此实例只自动提示一次。后台每天检查，手动检查间隔15分钟，不会自动更新软件。</p>
+              </div>
+            </section>
             <!-- 图片处理 -->
             <section class="settings-section" id="imgSection" data-save="local">
               <span class="dirty-badge">未保存</span>
