@@ -403,6 +403,7 @@ function hideProgress() {
 }
 
 function switchView(view) {
+  if (view !== 'settings') { updateManualFeedback = false; updateElement('updateDetails').style.display = 'none'; }
   if (els.mainView) els.mainView.style.display = 'block';
   if (els.uploadArea) els.uploadArea.style.display = view === 'main' ? 'block' : 'none';
   els.historyView.style.display = view === 'history' ? 'flex' : 'none';
@@ -1006,6 +1007,7 @@ function setupEventListeners() {
     settingsNavBtn.addEventListener('click', () => {
       if (!state.user) { toggleAuthModal(true); return; }
       switchView('settings');
+      updateManualFeedback = false; updateElement('updateDetails').style.display = 'none';
       void loadVersionInfo();
       if (els.backBtn) els.backBtn.style.display = 'inline-flex';
     });
@@ -1471,6 +1473,7 @@ function setupEventListeners() {
 }
 
 let updateInfo = null;
+let updateManualFeedback = false;
 let updateRefreshTimer = null;
 const updateElement = id => document.getElementById(id);
 const releaseUrl = info => `https://github.com/lx969788249/nodeimage_clone/releases/tag/${encodeURIComponent(info.latest.tag)}`;
@@ -1478,25 +1481,28 @@ function resetUpdateUi() {
   clearTimeout(updateRefreshTimer); updateInfo = null;
   updateElement('updateNotice').style.display = 'none';
   updateElement('updateControls').style.display = 'none';
-  updateElement('installedVersion').textContent = '未登录';
+  updateManualFeedback = false;
+  updateElement('updateDetails').style.display = 'none';
+  updateElement('installedVersion').textContent = '版本 —';
 }
 function renderVersionInfo(info) {
   updateInfo = info;
-  const build = info.revision ? `（构建 ${info.revision.slice(0, 7)}）` : '';
-  updateElement('installedVersion').textContent = info.currentVersion ? `v${info.currentVersion}${build}` : `未标记正式版本${build || '（版本未知）'}`;
+  updateElement('installedVersion').textContent = info.currentVersion ? `v${info.currentVersion}` : '版本 —';
   const admin = isAdminUser();
-  updateElement('updateControls').style.display = admin ? 'block' : 'none';
+  updateElement('updateControls').style.display = admin ? 'inline' : 'none';
+  updateElement('updateDetails').style.display = admin && updateManualFeedback ? 'flex' : 'none';
   if (!admin) { updateElement('updateNotice').style.display = 'none'; return; }
-  const labels = { available: '发现正式更新', current: '当前已是最新正式版本', ahead: '当前构建领先于最近正式发布',
-    no_release: '项目尚无正式 Release', unavailable: '暂时无法连接更新服务，稍后会自动重试', unknown: '当前版本无法与正式发布比较' };
-  updateElement('updateStatus').textContent = `${info.checking ? '正在检查…' : labels[info.status] || labels.unknown}${info.latest ? ` · v${info.latest.version}` : ''}${info.ignored ? '（已忽略此版本）' : ''}`;
-  updateElement('updateCheckedAt').textContent = info.checkedAt ? `上次成功检查：${new Date(info.checkedAt).toLocaleString()}` : '尚未完成检查';
-  updateElement('checkUpdatesBtn').disabled = !!info.checking || Date.now() < info.manualAvailableAt;
+  const labels = { available: '发现新版本', current: '已是最新版本', ahead: '暂无更新',
+    no_release: '暂无可用更新', unavailable: '检查失败，请稍后重试', unknown: '暂未识别版本' };
+  updateElement('updateStatus').textContent = info.checking ? '检查中…' : info.ignored ? '已忽略此版本' :
+    `${labels[info.status] || labels.unknown}${info.available && info.latest ? ` v${info.latest.version}` : ''}`;
+  updateElement('checkUpdatesBtn').disabled = !!info.checking || (updateManualFeedback && Date.now() < info.manualAvailableAt);
   const link = updateElement('releaseLink');
-  link.style.display = info.latest ? 'inline' : 'none';
+  link.style.display = info.available ? 'inline' : 'none';
   if (info.latest) link.href = releaseUrl(info);
-  updateElement('ignoreUpdateBtn').style.display = info.available && !info.ignored ? 'inline-flex' : 'none';
+  updateElement('ignoreUpdateBtn').style.display = info.available && !info.ignored ? 'inline' : 'none';
 }
+
 function scheduleVersionRefresh(info) {
   clearTimeout(updateRefreshTimer);
   if (!isAdminUser()) return;
@@ -1519,14 +1525,13 @@ async function loadVersionInfo({ announce = false } = {}) {
       const notice = await claimed.json();
       if (state.user?.id !== userId || !isAdminUser() || !notice.show) return;
       renderVersionInfo(notice);
-      updateElement('updateNoticeText').textContent = `有正式更新 v${notice.latest.version}`;
+      updateElement('updateNoticeText').textContent = `发现新版本 v${notice.latest.version}`;
       updateElement('updateNoticeLink').href = releaseUrl(notice);
       updateElement('updateNotice').style.display = 'flex';
     }
   } catch {
     if (state.user?.id !== userId) return;
-    if (!updateInfo) updateElement('installedVersion').textContent = '暂时无法读取版本';
-    if (isAdminUser()) updateElement('updateStatus').textContent = '暂时无法检查更新，稍后会重试';
+    if (updateManualFeedback) updateElement('updateStatus').textContent = '检查失败，请稍后重试';
     scheduleVersionRefresh({ manualAvailableAt: 0 });
   }
 }
@@ -1539,7 +1544,7 @@ async function ignoreUpdate() {
     if (!response.ok || state.user?.id !== userId) return;
     renderVersionInfo(await response.json());
     updateElement('updateNotice').style.display = 'none';
-  } catch { updateElement('updateStatus').textContent = '未能保存忽略设置，请稍后重试'; }
+  } catch { if (updateManualFeedback) updateElement('updateStatus').textContent = '操作失败，请重试'; }
 }
 updateElement('dismissUpdateNotice').addEventListener('click', () => { updateElement('updateNotice').style.display = 'none'; });
 updateElement('ignoreUpdateNotice').addEventListener('click', ignoreUpdate);
@@ -1547,6 +1552,9 @@ updateElement('ignoreUpdateBtn').addEventListener('click', ignoreUpdate);
 updateElement('checkUpdatesBtn').addEventListener('click', async () => {
   if (!isAdminUser()) return;
   const userId = state.user.id;
+  updateManualFeedback = true;
+  updateElement('updateDetails').style.display = 'flex';
+  updateElement('updateStatus').textContent = '检查中…';
   updateElement('checkUpdatesBtn').disabled = true;
   try {
     const response = await fetch('/api/app/update-check', { method: 'POST', credentials: 'include' });
@@ -1554,7 +1562,8 @@ updateElement('checkUpdatesBtn').addEventListener('click', async () => {
     if (state.user?.id !== userId) return;
     if (![202, 429].includes(response.status)) throw new Error('check');
     renderVersionInfo(info); scheduleVersionRefresh(info);
-  } catch { updateElement('updateStatus').textContent = '暂时无法检查，请稍后重试'; updateElement('checkUpdatesBtn').disabled = false; }
+    if (response.status === 429) updateElement('updateStatus').textContent = '刚检查过，请稍后再试';
+  } catch { updateElement('updateStatus').textContent = '检查失败，请稍后重试'; updateElement('checkUpdatesBtn').disabled = false; }
 });
 
 async function init() {

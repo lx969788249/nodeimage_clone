@@ -917,7 +917,15 @@ body, html {
   opacity: 1;
 }
 
-.update-notice, .version-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.update-notice { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .update-notice { padding: 12px 16px; margin: 12px 0; border: 1px solid var(--color-text-secondary); border-radius: 10px; }
 .update-notice > span { flex: 1 1 180px; }
 #versionSection a, .update-notice a { overflow-wrap: anywhere; text-decoration: underline; }
+
+.settings-about { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--color-border, #e5e7eb); color: var(--color-text-secondary); font-size: 13px; }
+.settings-about h3 { margin: 0 0 10px; color: inherit; font-size: 13px; font-weight: 500; }
+.version-meta, .version-feedback { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.version-feedback { margin-top: 10px; gap: 12px; }
+.version-text-button { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.version-text-button:hover { text-decoration: underline; }
+.version-text-button:disabled { opacity: .5; cursor: default; }
