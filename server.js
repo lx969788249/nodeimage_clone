@@ -9,12 +9,11 @@ import bcrypt from 'bcryptjs';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { fileURLToPath } from 'node:url';
-import { OperationGate, Mutex, Admission, LoginGuard, httpError, text, scheduleLongDelay } from './safety.js';
-import { proxySetting, baseUrl, requestContext } from './network.js';
-import { BackupManager, safeRelative } from './backup.js';
-import { acquireStorageLocks, normalizeLegacyThumbnailPaths, APPLICATION_SCHEMA, imageFormat, canonicalPath } from './storage.js';
+import { OperationGate, Mutex, Admission, LoginGuard, httpError, text, scheduleLongDelay } from './lib/safety.js';
+import { proxySetting, baseUrl, requestContext } from './lib/network.js';
+import { BackupManager, safeRelative, createS3Client, deliverBackup, rotateLocalBackups } from './lib/backup.js';
+import { acquireStorageLocks, normalizeLegacyThumbnailPaths, APPLICATION_SCHEMA, imageFormat, canonicalPath } from './lib/storage.js';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { createS3Client, deliverBackup, rotateLocalBackups } from './backup-delivery.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const storageRoot = path.resolve(process.env.STORAGE_ROOT || __dirname);
@@ -703,6 +702,7 @@ route('get', '/api/stats', async (req, res) => {
 
 route('post', '/api/upload', requireAuth, receiveImage, async (req, res) => {
   let published = [];
+  let response;
   try {
     if (!req.file) throw httpError(400, '缺少图片文件');
     if (!allowedMime.has(req.file.mimetype)) throw httpError(400, '不支持的文件类型');
@@ -740,13 +740,14 @@ route('post', '/api/upload', requireAuth, receiveImage, async (req, res) => {
     });
     published = [];
     const fileUrl = `${getBaseUrl(req)}/uploads/${filename}`;
-    res.json({ id, url: fileUrl, thumbUrl: `${getBaseUrl(req)}/uploads/${thumbName}`, size: processed.size,
+    response = { id, url: fileUrl, thumbUrl: `${getBaseUrl(req)}/uploads/${thumbName}`, size: processed.size,
       width: processed.width, height: processed.height, format: processed.ext,
-      markdown: `![image](${fileUrl})`, html: `<img src="${fileUrl}" alt="image" />`, bbcode: `[img]${fileUrl}[/img]` });
+      markdown: `![image](${fileUrl})`, html: `<img src="${fileUrl}" alt="image" />`, bbcode: `[img]${fileUrl}[/img]` };
   } finally {
     try { for (const filename of published) await fs.remove(filename); }
     finally { await req.releaseInput?.(); }
   }
+  res.json(response);
 });
 async function listImages(req, res, v1 = false) {
   const requestedPage = Number(req.query.page ?? 1);
