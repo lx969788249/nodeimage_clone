@@ -4,24 +4,24 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",
     "@aws-sdk/lib-storage": "^3.1057.0",
     "bcryptjs": "^2.4.3",
-    "cookie-parser": "^1.4.6",
     "express": "^4.19.2",
     "express-session": "^1.18.0",
     "fs-extra": "^11.2.0",
-    "mime-types": "^2.1.35",
-    "multer": "^1.4.5-lts.1",
+    "multer": "^2.4.0",
     "nanoid": "^5.0.7",
-    "sharp": "^0.33.4",
+    "sharp": "^0.35.5",
     "sqlite": "^5.1.1",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^6.0.1",
+    "tar": "^7.5.22"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.4"
+  "engines": {
+    "node": ">=24 <25"
   }
 }

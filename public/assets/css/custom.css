@@ -422,7 +422,6 @@ body, html {
 
 /* 上传区齿轮不触发上传 */
 .card-corner-btn { z-index: 20; }
-.nav-toggle-container #backBtn2 { display: none !important; }
 
 /* 页脚简化 */
 .site-footer { box-shadow: none; border-top: 1px solid var(--color-border-light); }
