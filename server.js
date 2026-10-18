@@ -9,7 +9,8 @@ import bcrypt from 'bcryptjs';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { fileURLToPath } from 'node:url';
-import { OperationGate, Mutex, Admission, httpError, text, scheduleLongDelay } from './safety.js';
+import { OperationGate, Mutex, Admission, LoginGuard, httpError, text, scheduleLongDelay } from './safety.js';
+import { proxySetting, baseUrl, requestContext } from './network.js';
 import { BackupManager, safeRelative } from './backup.js';
 import { acquireStorageLocks, normalizeLegacyThumbnailPaths, APPLICATION_SCHEMA, imageFormat, canonicalPath } from './storage.js';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
@@ -20,7 +21,7 @@ const storageRoot = path.resolve(process.env.STORAGE_ROOT || __dirname);
 const app = express();
 
 const PORT = process.env.PORT || 7878;
-const CONFIG_BASE_URL = process.env.BASE_URL ? process.env.BASE_URL.replace(/\/$/, '') : '';
+const CONFIG_BASE_URL = baseUrl(process.env.BASE_URL);
 
 // --- 自动备份配置 ---
 let _backupTimer = null;
@@ -46,28 +47,8 @@ if (!Number.isInteger(maxFileMiB) || maxFileMiB < 1 || maxFileMiB > 100) throw n
 const MAX_FILE_SIZE = maxFileMiB * 1024 * 1024; // retain the original 100 MiB default
 const DAILY_UPLOAD_LIMIT = 200;
 
-// --- 简易频率限制 ---
-const rateLimitMap = new Map();
-function rateLimit({ windowMs = 60000, max = 10 }) {
-  return (req, res, next) => {
-    const key = req.ip || req.connection.remoteAddress;
-    const now = Date.now();
-    if (!rateLimitMap.has(key)) rateLimitMap.set(key, []);
-    const entries = rateLimitMap.get(key).filter((t) => now - t < windowMs);
-    if (entries.length >= max) return res.status(429).json({ message: '请求过于频繁，请稍后再试' });
-    entries.push(now);
-    rateLimitMap.set(key, entries);
-    next();
-  };
-}
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entries] of rateLimitMap) {
-    const filtered = entries.filter((t) => now - t < 60000);
-    if (filtered.length) rateLimitMap.set(key, filtered);
-    else rateLimitMap.delete(key);
-  }
-}, 300000);
+const loginGuard = new LoginGuard();
+const dummyPasswordHash = bcrypt.hashSync(nanoid(32), 10);
 
 const gate = new OperationGate();
 const writes = new Mutex();
@@ -182,9 +163,9 @@ function newPassword(body, key, required = true) {
 await fs.ensureDir(uploadDir);
 await fs.ensureDir(path.dirname(dataFile));
 
-// 在反代场景下使用 X-Forwarded-* 头推断真实协议
-const proxySetting = process.env.TRUST_PROXY;
-app.set('trust proxy', proxySetting === undefined || proxySetting === 'true' ? true : proxySetting === 'false' ? false : proxySetting);
+const proxy = proxySetting(process.env.TRUST_PROXY);
+app.set('trust proxy', proxy.trust);
+app.use(requestContext({ compatibility: proxy.compatibility, trustPeer: app.get('trust proxy fn'), configuredBase: CONFIG_BASE_URL }));
 
 app.use((req, res, next) => (gate.maintenance || gate.failed) ? next(httpError(503, 'MAINTENANCE')) : next());
 app.use(express.json({ limit: '5mb' }));
@@ -200,7 +181,8 @@ app.use(
     secret: process.env.SESSION_SECRET || 'nodeimage-clone-secret',
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' }
+    proxy: true, // requestContext has already sanitized X-Forwarded-Proto
+    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7, httpOnly: true, secure: 'auto', sameSite: 'lax' }
   })
 );
 
@@ -236,7 +218,7 @@ app.use('/uploads/thumbs', guarded(async (req, res, next) => {
   const db = await getSqlite();
   const image = await db.get('SELECT * FROM images WHERE thumbName = ?', rel);
   if (!image || !safeRelative(image.filename)) return next();
-  const release = thumbnailAdmission.enter(req.ip);
+  const release = thumbnailAdmission.enter(image.userId);
   try {
     const thumb = await sharp(path.join(uploadDir, image.filename), { limitInputPixels: 40_000_000 })
       .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true }).webp({ quality: 80 }).toBuffer();
@@ -359,19 +341,7 @@ async function removeFiles() {
   });
 }
 
-function getBaseUrl(req) {
-  if (CONFIG_BASE_URL) return CONFIG_BASE_URL;
-  const xfProto = req.get('x-forwarded-proto') || req.get('x-forwarded-scheme');
-  let protocol = (xfProto || (req.secure ? 'https' : req.protocol) || 'http').split(',')[0].trim();
-  // 如果 Referer/Origin 是 https，则优先用 https，避免反代未带 proto 头时出现 http 链接
-  const ref = req.get('referer') || req.get('origin') || '';
-  if (ref.startsWith('https://')) protocol = 'https';
-  if (req.get('front-end-https') === 'on') protocol = 'https';
-  const xfHost = req.get('x-forwarded-host');
-  const hostHeader = req.get('host');
-  const host = (xfHost || hostHeader || '').split(',')[0].trim();
-  return `${protocol}://${host}`;
-}
+function getBaseUrl(req) { return req.publicContext.baseUrl; }
 
 function generateApiKey() {
   return nanoid(48);
@@ -458,24 +428,39 @@ route('get', '/api/user/status', attachUser, async (req, res) => {
     dailyUploads: count, dailyUploadLimit: DAILY_UPLOAD_LIMIT, apiKey: user.apiKey });
 });
 
-route('post', '/api/auth/login', rateLimit({ windowMs: 60000, max: 10 }), async (req, res) => {
+route('post', '/api/auth/login', async (req, res) => {
   const username = text(req.body, 'username', { required: true, max: 30 });
   const password = text(req.body, 'password', { required: true, max: 4096, trim: false });
-  const db = await getSqlite();
-  let user = await db.get('SELECT * FROM users WHERE username = ?', username);
-  if (!user) throw httpError(401, '用户名或密码错误');
-  const originalHash = user.passwordHash;
-  if (originalHash && !await bcrypt.compare(password, originalHash)) throw httpError(401, '用户名或密码错误');
-  const initialHash = !originalHash ? await bcrypt.hash(password, 10) : null;
-  user = await transaction(async conn => {
-    const current = await conn.get('SELECT * FROM users WHERE id = ?', user.id);
-    if (!current || current.passwordHash !== originalHash || current.username !== username) throw httpError(401, 'AUTH_EXPIRED');
-    if (initialHash) await conn.run('UPDATE users SET passwordHash = ? WHERE id = ?', initialHash, user.id);
-    return current;
-  });
-  req.session.userId = user.id;
-  req.session.sessionVersion = user.sessionVersion || 1;
-  res.json({ message: '登录成功', user: { username: user.username, level: user.level }, defaultCreds: username === 'admin' && password === 'admin' });
+  let release;
+  try { release = loginGuard.enter(); }
+  catch (err) { res.set('Retry-After', '1'); throw err; }
+  try {
+    const db = await getSqlite();
+    let user = await db.get('SELECT * FROM users WHERE username = ?', username);
+    const originalHash = user?.passwordHash;
+    const matches = await bcrypt.compare(password, originalHash || dummyPasswordHash);
+    if (!user || (originalHash && !matches)) {
+      const failure = loginGuard.failed(username);
+      if (failure.retryAfter) res.set('Retry-After', String(failure.retryAfter));
+      // Retain the permit through disconnect and backoff; never queue verification.
+      if (failure.delayMs) await new Promise(resolve => setTimeout(resolve, failure.delayMs));
+      throw httpError(failure.status, failure.status === 429 ? '登录失败较多，请稍后重试' : '用户名或密码错误');
+    }
+    const initialHash = !originalHash ? await bcrypt.hash(newPassword(req.body, 'password'), 10) : null;
+    user = await transaction(async conn => {
+      const current = await conn.get('SELECT * FROM users WHERE id = ?', user.id);
+      if (!current || current.passwordHash !== originalHash || current.username !== username) throw httpError(401, 'AUTH_EXPIRED');
+      if (initialHash) await conn.run('UPDATE users SET passwordHash = ? WHERE id = ?', initialHash, user.id);
+      return current;
+    });
+    loginGuard.succeeded(username);
+    await new Promise((resolve, reject) => req.session.regenerate(err => err ? reject(err) : resolve()));
+    req.session.userId = user.id;
+    req.session.sessionVersion = user.sessionVersion || 1;
+    // Also upgrade the policy when an existing HTTP session logs in via HTTPS.
+    req.session.cookie.secure = req.publicContext.protocol === 'https';
+    res.json({ message: '登录成功', user: { username: user.username, level: user.level }, defaultCreds: username === 'admin' && password === 'admin' });
+  } finally { release(); }
 });
 route('post', '/api/auth/logout', async (req, res) => {
   await new Promise((resolve, reject) => req.session.destroy(err => err ? reject(err) : resolve()));
@@ -492,7 +477,9 @@ route('post', '/api/auth/register', async (req, res) => {
     await db.run('INSERT INTO users (id, username, passwordHash, apiKey, level, sessionVersion, createdAt) VALUES (?,?,?,?,1,1,?)',
       user.id, username, passwordHash, user.apiKey, Date.now());
   });
+  await new Promise((resolve, reject) => req.session.regenerate(err => err ? reject(err) : resolve()));
   req.session.userId = user.id; req.session.sessionVersion = 1;
+  req.session.cookie.secure = req.publicContext.protocol === 'https';
   res.json({ message: '注册成功', user: { username, level: 1 } });
 });
 function requireAdmin(req, res, next) {

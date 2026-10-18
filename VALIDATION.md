@@ -1,6 +1,6 @@
 # 修复与验证记录
 
-基线 main：`93f7ce42dceeae8a15ebe8d2aa517d1ce8345582`。初次提交 `0e7be72`，后续修复均在 `fix/data-safety-regressions`。没有改main、推送、PR、合并、部署或访问生产数据。
+基线 main：`93f7ce42dceeae8a15ebe8d2aa517d1ce8345582`。初次提交 `0e7be72`，后续修复均在 `fix/data-safety-regressions`。修复分支已推送且有现存 PR3；没有改main、合并、部署或访问生产数据。本轮main同步会触发Docker Hub latest发布，确认前保持冻结。
 
 ## 本机环境与复现
 
@@ -14,13 +14,14 @@ npm audit
 node --check server.js
 node --check backup.js
 node --check safety.js
+node --check network.js
 node --check storage.js
 node --check backup-delivery.js
 node --check public/assets/js/main.js
 git diff --check
 ```
 
-最终整合回归 **66/66通过，0失败、0跳过**；完整输出保存在根目录外的 `nodeimage-test-results.log`。全套测试包括所有独立审查新增回归，全部使用临时存储根目录、127.0.0.1及随机端口；没有跳过失败用例。最初沙箱EPERM监听限制后，使用批准的本地执行运行。
+此前整合回归 **66/66通过，0失败、0跳过**；完整输出保存在根目录外的 `nodeimage-test-results.log`。全套测试包括所有独立审查新增回归，全部使用临时存储根目录、127.0.0.1及随机端口；没有跳过失败用例。最初沙箱EPERM监听限制后，使用批准的本地执行运行。
 
 干净npm ci成功；npm audit全依赖与生产依赖均 **0项已知漏洞**。审计仅代表执行时数据库的已知问题，不证明没有未知漏洞。
 
@@ -45,12 +46,18 @@ git diff --check
 ## 未验证与已知边界
 
 - Docker29.8.2引擎可连，但构建在docker.io/library/node:24-alpine元数据阶段DeadlineExceeded，未进入应用安装。因此Docker/Alpine原生依赖、真实双卷恢复均未通过验证；EXDEV为模拟限制。
-- 本地HTTP模拟S3/Webhook已测，真实云服务、S3大包multipart及真实远端轮转未验。未推送，远端GitHub Actions也未执行。
+- 本地HTTP模拟S3/Webhook已测，真实云服务、S3大包multipart及真实远端轮转未验。此前5170e52的Linux/macOS push与PR Actions均成功（66/66）；本轮新增回归的远端结果以交付记录中对应提交的终态检查为准。
 - Chrome只验证首页/100MiB动态说明/登录框；后续被已有扩展UI拦截。Playwright CLI获取受npm DNS限制，未以完整浏览器端到端通过交付；VM生产脚本行为测试已执行。
-- TRUST_PROXY默认仍true为旧部署兼容，直连可伪造XFF绕限频，**部署前需按实际代理设置false或可信IP/CIDR**。默认风险并未消除，已记录待用户/运维决定；false配置的阻断测试通过。
+- 默认不信任转发IP，单值协议提示仅供链接/Cookie；按账号失败与有界全局并发保护不依赖XFF。协议提示不证明代理身份，Host语法不证明本站域名；复杂反代仍可配置明确边界/BASE_URL。持续攻击可耗尽全局许可，不能保证正常请求永不429。
 - 协作锁不保护旧版本/外部工具/网络共享文件系统；旧版本必须停止。仅支持单机单实例。
 - SIGKILL一致性不等于断电、磁盘损坏或任意硬件故障保证；未做长期压力和所有容量组合实验。回滚数据保留需运维离线清理。
 - 旧WAL缺失不能补回。大图库备份可超过默认恢复限额，需容量规划/离线迁移。旧孤儿文件不自动索引，非应用约束不保留，新密码72字节而旧长密码需自行改密。
 - sqlite3上游已归档，维护迁移另行安排。
 
 参考：[Node发布支持](https://nodejs.org/en/about/previous-releases)、[Multer发布](https://github.com/expressjs/multer/releases)、[SQLite backup API](https://www.sqlite.org/backup.html)、[sqlite3维护状态](https://github.com/TryGhost/node-sqlite3/releases)。
+
+## 本轮低配置代理/登录回归
+
+新增 test/network.test.js：默认直连、单值与伪造/多值协议、TLS优先、显式false/可信与非可信CIDR/hop、Host与BASE_URL注入拒绝/路径前缀、有界失败状态、共享代理15次成功登录、同账号失败阈值后正确登录、XFF轮换不能重置失败额度、不同账号互不锁定、生产模式HTTP Cookie、旧会话HTTPS升级、全局验证过载、断连持槽/最终释放、真实本机HTTP转发代理及历史空密码初始化。代理测试模拟TLS终止后的XFP，未测试公网证书/真实TLS终端。
+
+独立backend_review/config_review实际代码复核的修复记录见REVIEW。本轮 Mac mini 完整 `npm test` **78/78通过，0失败、0跳过**（44.52秒）；`npm audit --omit=dev` 0项已知漏洞，server/safety/network语法检查与 `git diff --check` 通过。新增 network 测试12项纳入全套；backend_review在最后新增注册测试前独立执行11/11通过。完整日志保存在仓库外 `nodeimage-test-results.log`。本轮同一提交的最终GitHub Actions结果由交付记录单独提供，不把静态审查或未完成的运行当成测试通过。

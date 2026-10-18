@@ -94,3 +94,37 @@ export function scheduleLongDelay(fn, milliseconds, schedule = setTimeout, cance
   arm(milliseconds);
   return () => { cancelled = true; cancel(handle); };
 }
+
+// No IP keys, lockouts, request queue or unbounded timestamp arrays. A valid
+// password is checked even after failures; delays apply only to failed attempts.
+export class LoginGuard {
+  constructor({ limit = 8, capacity = 1024, windowMs = 60000, now = Date.now } = {}) {
+    Object.assign(this, { limit, capacity, windowMs, now });
+    this.active = 0;
+    this.failures = new Map();
+    this.global = { start: now(), count: 0 };
+  }
+  enter() {
+    if (this.active >= this.limit) throw httpError(429, 'AUTH_BUSY');
+    this.active++;
+    let done = false;
+    return () => { if (!done) { done = true; this.active--; } };
+  }
+  failed(username) {
+    const now = this.now();
+    for (const [key, value] of this.failures) if (now - value.start >= this.windowMs) this.failures.delete(key);
+    if (now - this.global.start >= this.windowMs) this.global = { start: now, count: 0 };
+    this.global.count = Math.min(this.global.count + 1, 1000);
+    let account = this.failures.get(username);
+    if (!account) {
+      if (this.failures.size >= this.capacity) this.failures.delete(this.failures.keys().next().value);
+      account = { start: now, count: 0 };
+      this.failures.set(username, account);
+    }
+    account.count = Math.min(account.count + 1, 1000);
+    const limited = account.count > 10 || this.global.count > 100;
+    return { status: limited ? 429 : 401, retryAfter: limited ? 2 : 0,
+      delayMs: Math.min(2000, Math.max(0, account.count - 5, this.global.count - 100) * 100) };
+  }
+  succeeded(username) { this.failures.delete(username); }
+}

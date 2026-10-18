@@ -9,7 +9,7 @@ RUN apk add --no-cache python3 make g++ sqlite sqlite-dev \
 
 # 拷贝应用代码
 COPY public ./public
-COPY server.js safety.js backup.js storage.js backup-delivery.js ./
+COPY server.js network.js safety.js backup.js storage.js backup-delivery.js ./
 RUN mkdir -p uploads data
 
 ENV PORT=7878

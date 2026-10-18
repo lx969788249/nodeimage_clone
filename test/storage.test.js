@@ -85,7 +85,7 @@ test('an active static image stream is drained before backup maintenance starts'
   assert.equal((await pending).status, 200);
 });
 
-test('TRUST_PROXY=false prevents forged forwarded addresses bypassing the login quota', async t => {
+test('forged forwarded addresses do not reset failed-account protection with TRUST_PROXY=false', async t => {
   const f = await fixture(t, { env: { TRUST_PROXY: 'false' } });
   const statuses = [];
   for (let i = 0; i < 12; i++) {
